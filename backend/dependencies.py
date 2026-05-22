@@ -27,6 +27,8 @@ def apply_filters(
     range_param: str = "30d",
     institution: str = "all",
     account: str = "all",
+    category: str = "all",
+    merchant_query: str = "",
 ) -> pd.DataFrame:
     # Date range filter
     r = (range_param or "30d").strip().lower()
@@ -81,5 +83,17 @@ def apply_filters(
     # Account filter
     if account and account.lower() != "all":
         df = ins.filter_by_account(df, account)
+
+    # Category filter — case-insensitive exact match against the canonical category
+    if category and category.lower() != "all" and "category" in df.columns:
+        df = df[df["category"].fillna("").str.lower() == category.lower()].copy()
+
+    # Merchant filter — substring match on merchant_normalized or raw name
+    if merchant_query and "merchant_normalized" in df.columns:
+        q = merchant_query.strip().lower()
+        if q:
+            merch = df["merchant_normalized"].fillna("").str.lower()
+            name = df["name"].fillna("").str.lower() if "name" in df.columns else merch
+            df = df[merch.str.contains(q, regex=False) | name.str.contains(q, regex=False)].copy()
 
     return df

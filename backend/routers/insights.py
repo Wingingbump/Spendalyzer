@@ -73,10 +73,12 @@ def monthly(
     range: str = Query("30d"),
     institution: str = Query("all"),
     account: str = Query("all"),
+    category: str = Query("all"),
+    merchant_query: str = Query(""),
     current_user: dict = Depends(get_current_user),
 ):
     df = ins.load_data(current_user["id"])
-    df = apply_filters(df, range, institution, account)
+    df = apply_filters(df, range, institution, account, category, merchant_query)
     result = ins.spending_by_month(df)
     return _df_to_records(result)
 
@@ -86,10 +88,12 @@ def categories(
     range: str = Query("30d"),
     institution: str = Query("all"),
     account: str = Query("all"),
+    merchant_query: str = Query(""),
     current_user: dict = Depends(get_current_user),
 ):
     df = ins.load_data(current_user["id"])
-    df = apply_filters(df, range, institution, account)
+    # No category filter here — would empty the result. Merchant filter is fine.
+    df = apply_filters(df, range, institution, account, "all", merchant_query)
     result = ins.spending_by_category(df)
     return _df_to_records(result)
 
@@ -99,10 +103,12 @@ def dow(
     range: str = Query("30d"),
     institution: str = Query("all"),
     account: str = Query("all"),
+    category: str = Query("all"),
+    merchant_query: str = Query(""),
     current_user: dict = Depends(get_current_user),
 ):
     df = ins.load_data(current_user["id"])
-    df = apply_filters(df, range, institution, account)
+    df = apply_filters(df, range, institution, account, category, merchant_query)
     result = ins.spending_by_dow(df)
     # Rename 'dow' column to 'day' if present
     if "dow" in result.columns:

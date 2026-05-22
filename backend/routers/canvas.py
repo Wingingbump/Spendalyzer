@@ -57,6 +57,18 @@ def get_sankey(
     account: str = Query("all"),
     current_user: dict = Depends(get_current_user),
 ):
+    """
+    Three-column flow funneled through a single balance hub:
+
+        Income sources → Balance → Outflow categories
+
+    Routing every income line into one middle node and every outflow line back
+    out of it makes the diagram visually clean — no crossings between sources,
+    no crossings between destinations. Surplus becomes a "Savings" outflow;
+    deficit becomes a "Drawn from balance" income.
+    """
+    import pandas as pd
+
     df = ins.load_data(current_user["id"])
     df = apply_filters(df, range, institution, account)
 
@@ -65,38 +77,95 @@ def get_sankey(
 
     clean = df[
         (~df["is_transfer"].fillna(False)) &
-        (~df["is_duplicate"].fillna(False)) &
-        (df["type"] == "debit")
+        (~df["is_duplicate"].fillna(False))
     ] if "is_transfer" in df.columns else df
 
-    if clean.empty or "institution" not in clean.columns or "category" not in clean.columns:
+    if clean.empty:
         return {"nodes": [], "links": []}
 
-    flows = (
-        clean.groupby(["institution", "category"])["amount"]
-        .sum()
-        .reset_index()
+    TOP_INCOME = 6
+    TOP_CATEGORIES = 10
+
+    # ── Income totals by source ───────────────────────────────────────────────
+    credits_df = clean[clean["type"] == "credit"].copy()
+    if not credits_df.empty and "merchant_normalized" in credits_df.columns:
+        credits_df["abs_amount"] = credits_df["amount"].abs()
+        credits_df["source"] = credits_df["merchant_normalized"].fillna("").replace("", "Other income")
+        src_totals = credits_df.groupby("source")["abs_amount"].sum()
+        if len(src_totals) > TOP_INCOME:
+            top = src_totals.nlargest(TOP_INCOME)
+            other = src_totals.drop(top.index).sum()
+            income_totals = top.copy()
+            if other > 0:
+                income_totals["Other income"] = income_totals.get("Other income", 0) + other
+        else:
+            income_totals = src_totals.copy()
+        income_totals = income_totals[income_totals > 0]
+    else:
+        income_totals = pd.Series(dtype=float)
+
+    # ── Outflow totals by category ────────────────────────────────────────────
+    debits_df = clean[clean["type"] == "debit"].copy()
+    if not debits_df.empty and "category" in debits_df.columns:
+        debits_df["category"] = debits_df["category"].fillna("Uncategorized")
+        cat_raw_totals = debits_df.groupby("category")["amount"].sum()
+        if len(cat_raw_totals) > TOP_CATEGORIES:
+            top = cat_raw_totals.nlargest(TOP_CATEGORIES)
+            other = cat_raw_totals.drop(top.index).sum()
+            cat_totals = top.copy()
+            if other > 0:
+                cat_totals["Other"] = cat_totals.get("Other", 0) + other
+        else:
+            cat_totals = cat_raw_totals.copy()
+        cat_totals = cat_totals[cat_totals > 0]
+    else:
+        cat_totals = pd.Series(dtype=float)
+
+    if income_totals.empty and cat_totals.empty:
+        return {"nodes": [], "links": []}
+
+    total_income = float(income_totals.sum())
+    total_outflow = float(cat_totals.sum())
+
+    # Balance the diagram so the hub's inflow and outflow match.
+    if total_outflow > total_income and total_outflow > 0:
+        income_totals = income_totals.copy()
+        income_totals["Drawn from balance"] = total_outflow - total_income
+        total_income = total_outflow
+    elif total_income > total_outflow and total_income > 0:
+        cat_totals = cat_totals.copy()
+        cat_totals["Savings"] = total_income - total_outflow
+        total_outflow = total_income
+
+    # ── Nodes ordered largest → smallest within each column, hub in middle ────
+    income_nodes = list(income_totals.sort_values(ascending=False).index)
+    cat_nodes = list(cat_totals.sort_values(ascending=False).index)
+    hub_name = "Balance"
+
+    nodes = (
+        [{"name": n, "kind": "income"} for n in income_nodes]
+        + [{"name": hub_name, "kind": "balance"}]
+        + [{"name": n, "kind": "category"} for n in cat_nodes]
     )
-    flows = flows[flows["amount"] > 0]
 
-    if flows.empty:
-        return {"nodes": [], "links": []}
+    income_idx = {n: i for i, n in enumerate(income_nodes)}
+    hub_idx = len(income_nodes)
+    cat_idx = {n: i + len(income_nodes) + 1 for i, n in enumerate(cat_nodes)}
 
-    institutions = sorted(flows["institution"].unique().tolist())
-    categories = sorted(flows["category"].unique().tolist())
-
-    nodes = [{"name": n} for n in institutions] + [{"name": n} for n in categories]
-    inst_idx = {n: i for i, n in enumerate(institutions)}
-    cat_idx = {n: i + len(institutions) for i, n in enumerate(categories)}
-
-    links = [
-        {
-            "source": inst_idx[row["institution"]],
-            "target": cat_idx[row["category"]],
-            "value": round(float(row["amount"]), 2),
-        }
-        for _, row in flows.iterrows()
-    ]
+    # ── Links: source → hub, hub → category. One line per node. ───────────────
+    links = []
+    for src in income_nodes:
+        links.append({
+            "source": income_idx[src],
+            "target": hub_idx,
+            "value": round(float(income_totals[src]), 2),
+        })
+    for cat in cat_nodes:
+        links.append({
+            "source": hub_idx,
+            "target": cat_idx[cat],
+            "value": round(float(cat_totals[cat]), 2),
+        })
 
     return {"nodes": nodes, "links": links}
 

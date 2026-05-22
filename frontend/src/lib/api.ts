@@ -177,6 +177,8 @@ export interface FilterParams {
   types?: string
   show_transfers?: boolean
   show_duplicates?: boolean
+  category?: string
+  merchant_query?: string
   [key: string]: string | boolean | undefined
 }
 
@@ -490,6 +492,10 @@ export interface CanvasWidget {
     field?: string
     metric?: 'amount' | 'count'
     limit?: number
+    // Per-widget filters (override or narrow the page-level filters)
+    category?: string          // 'all' or a specific category name
+    merchant_query?: string    // substring match on merchant/name
+    range_override?: string    // e.g. '30d', 'ytd', '12m' — empty/undefined = use page filter
   }
 }
 
@@ -512,8 +518,10 @@ export interface CanvasData extends CanvasMeta {
   widgets: Record<string, CanvasWidget>
 }
 
+export type SankeyNodeKind = 'income' | 'balance' | 'category'
+
 export interface SankeyData {
-  nodes: Array<{ name: string }>
+  nodes: Array<{ name: string; kind?: SankeyNodeKind }>
   links: Array<{ source: number; target: number; value: number }>
 }
 

@@ -49,10 +49,12 @@ def list_transactions(
     institution: str = Query("all"),
     account: str = Query("all"),
     search: Optional[str] = Query(None),
+    category: str = Query("all"),
+    merchant_query: str = Query(""),
     current_user: dict = Depends(get_current_user),
 ):
     df = ins.load_data(current_user["id"])
-    df = apply_filters(df, range, institution, account)
+    df = apply_filters(df, range, institution, account, category, merchant_query)
 
     spending = ins.get_spending(df)
     cols = [c for c in ["id", "date", "name", "merchant_normalized", "category",

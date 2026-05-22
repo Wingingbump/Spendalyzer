@@ -39,10 +39,12 @@ def list_merchants(
     range: str = Query("30d"),
     institution: str = Query("all"),
     account: str = Query("all"),
+    category: str = Query("all"),
+    merchant_query: str = Query(""),
     current_user: dict = Depends(get_current_user),
 ):
     df = ins.load_data(current_user["id"])
-    df = apply_filters(df, range, institution, account)
+    df = apply_filters(df, range, institution, account, category, merchant_query)
     result = ins.spending_by_merchant(df, top_n=15)
     return _df_to_records(result)
 

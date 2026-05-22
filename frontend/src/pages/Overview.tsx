@@ -555,7 +555,10 @@ export default function Overview() {
           </div>
 
           {/* Most Visited */}
-          <div className="flex items-start gap-2.5 px-4 pt-4 sm:pt-0" style={{ borderTop: '1px solid var(--color-border)' }}>
+          <div
+            className="flex items-start gap-2.5 px-4 pt-4 sm:pt-0 sm:pl-4 border-t sm:border-t-0 sm:border-l"
+            style={{ borderColor: 'var(--color-border)' }}
+          >
             <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: 'rgba(90,191,138,0.10)' }}>
               <Store size={13} style={{ color: 'var(--color-positive)' }} />
             </div>
@@ -571,7 +574,10 @@ export default function Overview() {
           </div>
 
           {/* Biggest Day */}
-          <div className="flex items-start gap-2.5 pl-4 pt-4 sm:pt-0" style={{ borderTop: '1px solid var(--color-border)' }}>
+          <div
+            className="flex items-start gap-2.5 px-4 pt-4 sm:pt-0 sm:pl-4 border-t sm:border-t-0 sm:border-l"
+            style={{ borderColor: 'var(--color-border)' }}
+          >
             <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: 'rgba(232,96,96,0.10)' }}>
               <Calendar size={13} style={{ color: 'var(--color-negative)' }} />
             </div>

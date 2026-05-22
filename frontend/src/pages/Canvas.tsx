@@ -7,11 +7,11 @@ import {
   XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from 'recharts'
 import { Plus, X, Settings2, Save, Check, GripVertical, BarChart2, TrendingUp, TrendingDown, PieChart as PieIcon, GitBranch, Hash, AlertCircle, Pencil } from 'lucide-react'
-import { canvasApi, insightsApi, merchantsApi } from '../lib/api'
-import type { CanvasWidget, CanvasLayoutItem, CanvasMeta, WidgetType, WidgetSource } from '../lib/api'
+import { canvasApi, insightsApi, merchantsApi, categoriesApi, transactionsApi } from '../lib/api'
+import type { CanvasWidget, CanvasLayoutItem, CanvasMeta, WidgetType, WidgetSource, FilterParams, Transaction } from '../lib/api'
 import { useFilters } from '../context/FilterContext'
 import { useTheme } from '../context/ThemeContext'
-import { formatCurrency, formatMonth, truncate, CHART_COLORS_DARK, CHART_COLORS_LIGHT } from '../lib/utils'
+import { formatCurrency, formatMonth, truncate, formatDate, CHART_COLORS_DARK, CHART_COLORS_LIGHT } from '../lib/utils'
 
 import 'react-grid-layout/css/styles.css'
 import 'react-resizable/css/styles.css'
@@ -62,21 +62,43 @@ const TYPE_META: Record<WidgetType, { label: string; icon: React.ElementType; de
   sankey:  { label: 'Flow Chart',  icon: GitBranch,  description: 'How money flows from accounts to categories' },
 }
 
+const RANGE_OPTIONS: { value: string; label: string }[] = [
+  { value: '',     label: 'Use page filter' },
+  { value: '7d',   label: 'Last 7 days' },
+  { value: '30d',  label: 'Last 30 days' },
+  { value: '90d',  label: 'Last 90 days' },
+  { value: '6m',   label: 'Last 6 months' },
+  { value: '12m',  label: 'Last 12 months' },
+  { value: 'ytd',  label: 'Year to date' },
+  { value: 'all',  label: 'All time' },
+]
+
 function uid() { return Math.random().toString(36).slice(2, 9) }
 
-// ── Shared helpers ─────────────────────────────────────────────────────────────
-
-function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number }>; label?: string }) {
-  if (!active || !payload?.length) return null
-  return (
-    <div className="rounded-lg px-3 py-2" style={{ background: 'var(--color-surface-raise)', border: '1px solid var(--color-border)', fontSize: 12 }}>
-      {label && <p style={{ color: 'var(--color-text-muted)', marginBottom: 2 }}>{label}</p>}
-      <p style={{ color: 'var(--color-text-primary)', fontFamily: 'monospace', fontWeight: 600 }}>
-        {formatCurrency(payload[0].value)}
-      </p>
-    </div>
-  )
+// Merge page-level filters with per-widget overrides. Per-widget settings
+// always win when present. Returns an object suitable for FilterParams.
+function effectiveFilters(
+  widget: CanvasWidget,
+  pageFilters: ReturnType<typeof useFilters>,
+): FilterParams {
+  const cfg = widget.config
+  return {
+    range: cfg.range_override || pageFilters.range,
+    institution: pageFilters.institution,
+    account: pageFilters.account,
+    category: cfg.category && cfg.category !== 'all' ? cfg.category : undefined,
+    merchant_query: cfg.merchant_query || undefined,
+  }
 }
+
+// Drill-down: a slice the user clicked. The panel will fetch transactions
+// matching this slice + the widget's existing effective filters.
+type DrillContext = {
+  title: string
+  filters: FilterParams
+} | null
+
+// ── Shared helpers ─────────────────────────────────────────────────────────────
 
 function EmptyChart({ label }: { label: string }) {
   return (
@@ -89,9 +111,10 @@ function EmptyChart({ label }: { label: string }) {
 // ── Widget renderers ──────────────────────────────────────────────────────────
 
 function MetricWidget({ widget, filters }: { widget: CanvasWidget; filters: ReturnType<typeof useFilters> }) {
+  const eff = effectiveFilters(widget, filters)
   const { data, isLoading } = useQuery({
-    queryKey: ['summary', filters.range, filters.institution, filters.account],
-    queryFn: () => insightsApi.summary({ range: filters.range, institution: filters.institution, account: filters.account }),
+    queryKey: ['summary', eff.range, eff.institution, eff.account, eff.category, eff.merchant_query],
+    queryFn: () => insightsApi.summary(eff),
     staleTime: 30_000,
   })
 
@@ -99,11 +122,16 @@ function MetricWidget({ widget, filters }: { widget: CanvasWidget; filters: Retu
   const raw = data ? (data as unknown as Record<string, unknown>)[field] : undefined
   const value = typeof raw === 'number' ? raw : null
   const isPercent = field === 'delta_pct'
-  const isPositiveGood = field === 'net_spend' || field === 'delta_pct'
-  const color = value === null ? 'var(--color-text-primary)'
-    : isPositiveGood
-      ? value >= 0 ? 'var(--color-positive, #5abf8a)' : '#e86060'
-      : 'var(--color-text-primary)'
+  // For a spending app: lower is better. Positive delta_pct / net_spend means
+  // you spent more this month → red. Negative → green.
+  const isLowerBetter = field === 'delta_pct' || field === 'net_spend'
+  const color = value === null || !isLowerBetter
+    ? 'var(--color-text-primary)'
+    : value > 0
+      ? '#e86060'
+      : value < 0
+        ? 'var(--color-positive, #5abf8a)'
+        : 'var(--color-text-primary)'
 
   if (isLoading) {
     return (
@@ -134,56 +162,106 @@ function MetricWidget({ widget, filters }: { widget: CanvasWidget; filters: Retu
   )
 }
 
-function BarWidget({ widget, filters }: { widget: CanvasWidget; filters: ReturnType<typeof useFilters> }) {
+function BarWidget({
+  widget,
+  filters,
+  onDrill,
+}: {
+  widget: CanvasWidget
+  filters: ReturnType<typeof useFilters>
+  onDrill: (ctx: DrillContext) => void
+}) {
   const { theme } = useTheme()
   const colors = theme === 'dark' ? CHART_COLORS_DARK : CHART_COLORS_LIGHT
   const source = widget.config.source
   const limit = widget.config.limit ?? 10
+  const metric = widget.config.metric ?? 'amount'
+  const isCount = metric === 'count'
+  const eff = effectiveFilters(widget, filters)
 
   const { data: catData = [] } = useQuery({
-    queryKey: ['categories', filters.range, filters.institution, filters.account],
-    queryFn: () => insightsApi.categories({ range: filters.range, institution: filters.institution, account: filters.account }),
+    queryKey: ['categories', eff.range, eff.institution, eff.account, eff.merchant_query],
+    queryFn: () => insightsApi.categories(eff),
     enabled: source === 'categories',
     staleTime: 30_000,
   })
   const { data: monthlyData = [] } = useQuery({
-    queryKey: ['monthly', filters.range, filters.institution, filters.account],
-    queryFn: () => insightsApi.monthly({ range: filters.range, institution: filters.institution, account: filters.account }),
+    queryKey: ['monthly', eff.range, eff.institution, eff.account, eff.category, eff.merchant_query],
+    queryFn: () => insightsApi.monthly(eff),
     enabled: source === 'monthly',
     staleTime: 30_000,
   })
   const { data: merchantData = [] } = useQuery({
-    queryKey: ['merchants', filters.range, filters.institution, filters.account],
-    queryFn: () => merchantsApi.list({ range: filters.range, institution: filters.institution, account: filters.account }),
+    queryKey: ['merchants', eff.range, eff.institution, eff.account, eff.category, eff.merchant_query],
+    queryFn: () => merchantsApi.list(eff),
     enabled: source === 'merchants',
     staleTime: 30_000,
   })
   const { data: dowData = [] } = useQuery({
-    queryKey: ['dow', filters.range, filters.institution, filters.account],
-    queryFn: () => insightsApi.dow({ range: filters.range, institution: filters.institution, account: filters.account }),
+    queryKey: ['dow', eff.range, eff.institution, eff.account, eff.category, eff.merchant_query],
+    queryFn: () => insightsApi.dow(eff),
     enabled: source === 'dow',
     staleTime: 30_000,
   })
 
-  let chartData: Array<{ name: string; value: number }> = []
-  if (source === 'categories') chartData = catData.slice(0, limit).map((d) => ({ name: d.category, value: d.total }))
-  if (source === 'monthly')    chartData = monthlyData.slice(-limit).map((d) => ({ name: formatMonth(d.month), value: d.total }))
-  if (source === 'merchants')  chartData = merchantData.slice(0, limit).map((d) => ({ name: d.merchant_normalized, value: d.total }))
-  if (source === 'dow')        chartData = dowData.map((d) => ({ name: d.day.slice(0, 3), value: d.total }))
+  type Slice = { name: string; value: number; drill: FilterParams; label: string }
+  let chartData: Slice[] = []
+  if (source === 'categories') {
+    chartData = catData.slice(0, limit).map((d) => ({
+      name: d.category,
+      value: isCount ? d.count : d.total,
+      drill: { ...eff, category: d.category },
+      label: `${d.category} · ${eff.range || 'page range'}`,
+    }))
+  } else if (source === 'monthly') {
+    chartData = monthlyData.slice(-limit).map((d) => ({
+      name: formatMonth(d.month),
+      value: isCount ? d.count : d.total,
+      drill: { ...eff, range: d.month },
+      label: `${formatMonth(d.month)}${eff.category ? ` · ${eff.category}` : ''}`,
+    }))
+  } else if (source === 'merchants') {
+    chartData = merchantData.slice(0, limit).map((d) => ({
+      name: d.merchant_normalized,
+      value: isCount ? d.count : d.total,
+      drill: { ...eff, merchant_query: d.merchant_normalized },
+      label: `${d.merchant_normalized}${eff.category ? ` · ${eff.category}` : ''}`,
+    }))
+  } else if (source === 'dow') {
+    chartData = dowData.map((d) => ({
+      name: d.day.slice(0, 3),
+      value: isCount ? d.count : d.total,
+      drill: eff, // dow can't be filtered server-side; just show all in range
+      label: `${d.day}${eff.category ? ` · ${eff.category}` : ''}`,
+    }))
+  }
 
   if (!chartData.length) return <EmptyChart label="No data for this period" />
 
   const maxVal = Math.max(...chartData.map((d) => d.value))
-  const yTickFmt = (v: number) => maxVal >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${v}`
+  const yTickFmt = (v: number) => isCount ? `${v}` : maxVal >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${v}`
+  const labelFmt = (v: number) => isCount ? `${v}` : maxVal >= 1000 ? `$${(v / 1000).toFixed(1)}k` : `$${v}`
+
+  const handleClick = (entry: { payload?: Slice }) => {
+    if (!entry?.payload) return
+    onDrill({ title: entry.payload.label, filters: entry.payload.drill })
+  }
 
   return (
     <ResponsiveContainer width="100%" height="100%">
       <BarChart data={chartData} margin={{ top: 18, right: 8, left: 0, bottom: 40 }}>
         <XAxis dataKey="name" tick={{ fontSize: 10, fill: 'var(--color-text-muted)' }} angle={-35} textAnchor="end" interval={0} tickFormatter={(v) => truncate(v, 12)} />
         <YAxis tick={{ fontSize: 10, fill: 'var(--color-text-muted)' }} tickFormatter={yTickFmt} width={40} axisLine={false} tickLine={false} />
-        <Tooltip content={<ChartTooltip />} cursor={{ fill: 'var(--color-border)', opacity: 0.3 }} />
-        <Bar dataKey="value" radius={[3, 3, 0, 0]}>
-          <LabelList dataKey="value" position="top" formatter={(v: number) => maxVal >= 1000 ? `$${(v / 1000).toFixed(1)}k` : `$${v}`} style={{ fontSize: 9, fill: 'var(--color-text-muted)' }} />
+        <Tooltip
+          formatter={(v: number) => [isCount ? `${v} transactions` : formatCurrency(v), '']}
+          contentStyle={{ background: 'var(--color-surface-raise)', border: '1px solid var(--color-border)', fontSize: 12, borderRadius: 8, color: 'var(--color-text-primary)' }}
+          itemStyle={{ color: 'var(--color-text-primary)' }}
+          labelStyle={{ color: 'var(--color-text-muted)' }}
+          isAnimationActive={false}
+          cursor={{ fill: 'var(--color-border)', opacity: 0.3 }}
+        />
+        <Bar dataKey="value" radius={[3, 3, 0, 0]} onClick={handleClick} style={{ cursor: 'pointer' }}>
+          <LabelList dataKey="value" position="top" formatter={labelFmt} style={{ fontSize: 9, fill: 'var(--color-text-muted)' }} />
           {chartData.map((_, i) => <Cell key={i} fill={colors[i % colors.length]} />)}
         </Bar>
       </BarChart>
@@ -191,19 +269,44 @@ function BarWidget({ widget, filters }: { widget: CanvasWidget; filters: ReturnT
   )
 }
 
-function LineWidget({ filters }: { widget: CanvasWidget; filters: ReturnType<typeof useFilters> }) {
+function LineWidget({
+  widget,
+  filters,
+  onDrill,
+}: {
+  widget: CanvasWidget
+  filters: ReturnType<typeof useFilters>
+  onDrill: (ctx: DrillContext) => void
+}) {
   const { theme } = useTheme()
   const color = theme === 'dark' ? CHART_COLORS_DARK[0] : CHART_COLORS_LIGHT[0]
+  const eff = effectiveFilters(widget, filters)
+  const metric = widget.config.metric ?? 'amount'
+  const isCount = metric === 'count'
 
   const { data: monthlyData = [] } = useQuery({
-    queryKey: ['monthly', filters.range, filters.institution, filters.account],
-    queryFn: () => insightsApi.monthly({ range: filters.range, institution: filters.institution, account: filters.account }),
+    queryKey: ['monthly', eff.range, eff.institution, eff.account, eff.category, eff.merchant_query],
+    queryFn: () => insightsApi.monthly(eff),
     staleTime: 30_000,
   })
 
-  const chartData = monthlyData.map((d) => ({ name: formatMonth(d.month), value: d.total }))
+  type Slice = { name: string; value: number; month: string }
+  const chartData: Slice[] = monthlyData.map((d) => ({
+    name: formatMonth(d.month),
+    value: isCount ? d.count : d.total,
+    month: d.month,
+  }))
   if (!chartData.length) return <EmptyChart label="No data for this period" />
   const maxVal = Math.max(...chartData.map((d) => d.value))
+
+  const handleDotClick = (e: unknown) => {
+    const payload = (e as { payload?: Slice })?.payload
+    if (!payload) return
+    onDrill({
+      title: `${payload.name}${eff.category ? ` · ${eff.category}` : ''}`,
+      filters: { ...eff, range: `custom:${payload.month}-01:${payload.month}-31` },
+    })
+  }
 
   return (
     <ResponsiveContainer width="100%" height="100%">
@@ -215,71 +318,214 @@ function LineWidget({ filters }: { widget: CanvasWidget; filters: ReturnType<typ
           </linearGradient>
         </defs>
         <XAxis dataKey="name" tick={{ fontSize: 10, fill: 'var(--color-text-muted)' }} tickLine={false} axisLine={false} interval="preserveStartEnd" />
-        <YAxis tick={{ fontSize: 10, fill: 'var(--color-text-muted)' }} tickFormatter={(v) => maxVal >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${v}`} width={40} axisLine={false} tickLine={false} />
-        <Tooltip content={<ChartTooltip />} />
-        <Area type="monotone" dataKey="value" stroke={color} strokeWidth={2} fill={`url(#areaGrad-${color.replace('#', '')})`} dot={false} activeDot={{ r: 4, fill: color, stroke: 'var(--color-surface)', strokeWidth: 2 }} />
+        <YAxis tick={{ fontSize: 10, fill: 'var(--color-text-muted)' }} tickFormatter={(v) => isCount ? `${v}` : maxVal >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${v}`} width={40} axisLine={false} tickLine={false} />
+        <Tooltip
+          formatter={(v: number) => [isCount ? `${v} transactions` : formatCurrency(v), '']}
+          contentStyle={{ background: 'var(--color-surface-raise)', border: '1px solid var(--color-border)', fontSize: 12, borderRadius: 8, color: 'var(--color-text-primary)' }}
+          itemStyle={{ color: 'var(--color-text-primary)' }}
+          labelStyle={{ color: 'var(--color-text-muted)' }}
+          isAnimationActive={false}
+        />
+        <Area
+          type="monotone"
+          dataKey="value"
+          stroke={color}
+          strokeWidth={2}
+          fill={`url(#areaGrad-${color.replace('#', '')})`}
+          dot={{ r: 3, fill: color, stroke: 'var(--color-surface)', strokeWidth: 1, cursor: 'pointer' }}
+          activeDot={{ r: 5, fill: color, stroke: 'var(--color-surface)', strokeWidth: 2, cursor: 'pointer', onClick: handleDotClick }}
+        />
       </AreaChart>
     </ResponsiveContainer>
   )
 }
 
-function PieWidget({ widget, filters }: { widget: CanvasWidget; filters: ReturnType<typeof useFilters> }) {
+function PieWidget({
+  widget,
+  filters,
+  onDrill,
+}: {
+  widget: CanvasWidget
+  filters: ReturnType<typeof useFilters>
+  onDrill: (ctx: DrillContext) => void
+}) {
   const { theme } = useTheme()
   const colors = theme === 'dark' ? CHART_COLORS_DARK : CHART_COLORS_LIGHT
   const source = widget.config.source
   const limit = widget.config.limit ?? 6
+  const metric = widget.config.metric ?? 'amount'
+  const isCount = metric === 'count'
+  const eff = effectiveFilters(widget, filters)
 
   const { data: catData = [] } = useQuery({
-    queryKey: ['categories', filters.range, filters.institution, filters.account],
-    queryFn: () => insightsApi.categories({ range: filters.range, institution: filters.institution, account: filters.account }),
+    queryKey: ['categories', eff.range, eff.institution, eff.account, eff.merchant_query],
+    queryFn: () => insightsApi.categories(eff),
     enabled: source === 'categories',
     staleTime: 30_000,
   })
   const { data: merchantData = [] } = useQuery({
-    queryKey: ['merchants', filters.range, filters.institution, filters.account],
-    queryFn: () => merchantsApi.list({ range: filters.range, institution: filters.institution, account: filters.account }),
+    queryKey: ['merchants', eff.range, eff.institution, eff.account, eff.category, eff.merchant_query],
+    queryFn: () => merchantsApi.list(eff),
     enabled: source === 'merchants',
     staleTime: 30_000,
   })
 
-  const rawData = source === 'categories'
-    ? catData.slice(0, limit).map((d) => ({ name: d.category, value: d.total }))
-    : merchantData.slice(0, limit).map((d) => ({ name: d.merchant_normalized, value: d.total }))
+  type Slice = { name: string; value: number; drill: FilterParams; label: string }
+  const rawData: Slice[] = source === 'categories'
+    ? catData.slice(0, limit).map((d) => ({
+        name: d.category,
+        value: isCount ? d.count : d.total,
+        drill: { ...eff, category: d.category },
+        label: d.category,
+      }))
+    : merchantData.slice(0, limit).map((d) => ({
+        name: d.merchant_normalized,
+        value: isCount ? d.count : d.total,
+        drill: { ...eff, merchant_query: d.merchant_normalized },
+        label: d.merchant_normalized,
+      }))
 
   if (!rawData.length) return <EmptyChart label="No data for this period" />
   const total = rawData.reduce((s, d) => s + d.value, 0)
+  const fmtVal = (v: number) => isCount ? `${v}` : formatCurrency(v)
+
+  const handleSliceClick = (entry: { payload?: Slice }) => {
+    if (!entry?.payload) return
+    onDrill({ title: entry.payload.label, filters: entry.payload.drill })
+  }
 
   return (
     <div className="flex flex-col h-full" style={{ gap: 4 }}>
       <div style={{ flex: '0 0 62%' }}>
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
-            <Pie data={rawData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius="72%" innerRadius="42%" paddingAngle={2}>
+            <Pie
+              data={rawData}
+              dataKey="value"
+              nameKey="name"
+              cx="50%"
+              cy="50%"
+              outerRadius="72%"
+              innerRadius="42%"
+              paddingAngle={2}
+              onClick={handleSliceClick}
+              style={{ cursor: 'pointer' }}
+            >
               {rawData.map((_, i) => <Cell key={i} fill={colors[i % colors.length]} />)}
             </Pie>
-            <Tooltip formatter={(v: number) => [formatCurrency(v), '']} contentStyle={{ background: 'var(--color-surface-raise)', border: '1px solid var(--color-border)', fontSize: 12, borderRadius: 8 }} />
+            <Tooltip
+              formatter={(v: number) => [isCount ? `${v} transactions` : formatCurrency(v), '']}
+              contentStyle={{ background: 'var(--color-surface-raise)', border: '1px solid var(--color-border)', fontSize: 12, borderRadius: 8, color: 'var(--color-text-primary)' }}
+          itemStyle={{ color: 'var(--color-text-primary)' }}
+          labelStyle={{ color: 'var(--color-text-muted)' }}
+          isAnimationActive={false}
+            />
           </PieChart>
         </ResponsiveContainer>
       </div>
       <div style={{ textAlign: 'center', fontSize: 11, color: 'var(--color-text-muted)' }}>
-        Total: <span style={{ color: 'var(--color-text-primary)', fontWeight: 600, fontFamily: 'monospace' }}>{formatCurrency(total)}</span>
+        Total: <span style={{ color: 'var(--color-text-primary)', fontWeight: 600, fontFamily: 'monospace' }}>{fmtVal(total)}</span>
       </div>
       <div style={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 3, padding: '0 4px 4px' }}>
         {rawData.map((d, i) => (
-          <div key={d.name} className="flex items-center gap-2" style={{ minWidth: 0 }}>
+          <button
+            key={d.name}
+            onClick={() => onDrill({ title: d.label, filters: d.drill })}
+            className="flex items-center gap-2 hover:opacity-80"
+            style={{ minWidth: 0, background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left' }}
+          >
             <div style={{ width: 8, height: 8, borderRadius: 2, flexShrink: 0, background: colors[i % colors.length] }} />
             <span style={{ fontSize: 11, color: 'var(--color-text-muted)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{truncate(d.name, 20)}</span>
-            <span style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--color-text-secondary)', flexShrink: 0 }}>{formatCurrency(d.value)}</span>
-          </div>
+            <span style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--color-text-secondary)', flexShrink: 0 }}>{fmtVal(d.value)}</span>
+          </button>
         ))}
       </div>
     </div>
   )
 }
 
+// Sankey node renderer for income → balance → category. Income labels go to
+// the left of the bar; category labels go to the right; the central balance
+// node gets its label centered above the bar so it doesn't overlap inflow or
+// outflow lines.
+function SankeyNode({
+  x, y, width, height, payload, containerWidth, colors,
+}: {
+  x: number; y: number; width: number; height: number;
+  payload: { name: string; value: number; kind?: 'income' | 'balance' | 'category' };
+  containerWidth: number;
+  colors: { income: string; balance: string; category: string };
+}) {
+  const kind = payload.kind ?? (
+    x < containerWidth / 3 ? 'income'
+    : x > (containerWidth * 2) / 3 ? 'category'
+    : 'balance'
+  )
+  const fill = kind === 'income' ? colors.income : kind === 'category' ? colors.category : colors.balance
+
+  if (kind === 'balance') {
+    // Label sits centered above the bar; dollar amount centered inside the bar
+    // when it's tall enough, otherwise dropped.
+    return (
+      <g>
+        <rect x={x} y={y} width={width} height={height} fill={fill} rx={2} />
+        <text
+          x={x + width / 2}
+          y={y - 6}
+          textAnchor="middle"
+          style={{ fontSize: 11, fill: 'var(--color-text-primary)', fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase' }}
+        >
+          {payload.name}
+        </text>
+        {height >= 40 && (
+          <text
+            x={x + width / 2}
+            y={y + height / 2}
+            textAnchor="middle"
+            dominantBaseline="middle"
+            style={{ fontSize: 10, fill: 'var(--color-text-primary)', fontFamily: 'monospace', fontWeight: 600 }}
+          >
+            {formatCurrency(payload.value)}
+          </text>
+        )}
+      </g>
+    )
+  }
+
+  const labelOnRight = kind === 'category'
+  const labelX = labelOnRight ? x + width + 6 : x - 6
+  const anchor: 'start' | 'end' = labelOnRight ? 'start' : 'end'
+
+  return (
+    <g>
+      <rect x={x} y={y} width={width} height={height} fill={fill} rx={2} />
+      <text
+        x={labelX}
+        y={y + height / 2 - (height < 28 ? 0 : 6)}
+        textAnchor={anchor}
+        dominantBaseline="middle"
+        style={{ fontSize: 11, fill: 'var(--color-text-primary)', fontWeight: 500 }}
+      >
+        {payload.name}
+      </text>
+      {height >= 28 && (
+        <text
+          x={labelX}
+          y={y + height / 2 + 8}
+          textAnchor={anchor}
+          dominantBaseline="middle"
+          style={{ fontSize: 9, fill: 'var(--color-text-muted)', fontFamily: 'monospace' }}
+        >
+          {formatCurrency(payload.value)}
+        </text>
+      )}
+    </g>
+  )
+}
+
 function SankeyWidget({ filters }: { filters: ReturnType<typeof useFilters> }) {
   const { theme } = useTheme()
-  const colors = theme === 'dark' ? CHART_COLORS_DARK : CHART_COLORS_LIGHT
+  const palette = theme === 'dark' ? CHART_COLORS_DARK : CHART_COLORS_LIGHT
 
   const { data, isLoading } = useQuery({
     queryKey: ['sankey', filters.range, filters.institution, filters.account],
@@ -288,23 +534,63 @@ function SankeyWidget({ filters }: { filters: ReturnType<typeof useFilters> }) {
   })
 
   if (isLoading) return <EmptyChart label="Loading…" />
-  if (!data || !data.nodes.length) return <EmptyChart label="No flow data for this period" />
+  if (!data || !data.nodes.length || !data.links.length) return <EmptyChart label="No flow data for this period" />
+
+  const nodeColors = {
+    income: 'var(--color-positive, #5abf8a)',
+    balance: palette[0],
+    category: palette[2] ?? palette[1],
+  }
 
   return (
-    <ResponsiveContainer width="100%" height="100%">
-      <Sankey data={data} nodePadding={14} nodeWidth={10} margin={{ top: 12, right: 20, bottom: 12, left: 8 }} link={{ stroke: colors[1], strokeOpacity: 0.25 }} node={{ fill: colors[0], stroke: 'none' }}>
-        <Tooltip formatter={(v: number) => [formatCurrency(v), '']} contentStyle={{ background: 'var(--color-surface-raise)', border: '1px solid var(--color-border)', fontSize: 12, borderRadius: 8 }} />
-      </Sankey>
-    </ResponsiveContainer>
+    <div className="flex flex-col h-full" style={{ gap: 4 }}>
+      <div className="flex justify-between px-2" style={{ fontSize: 10, color: 'var(--color-text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+        <span>Income</span>
+        <span>Outflow</span>
+      </div>
+      <div style={{ flex: 1, minHeight: 0 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <Sankey
+            data={data}
+            nodePadding={20}
+            nodeWidth={16}
+            iterations={64}
+            margin={{ top: 24, right: 130, bottom: 8, left: 130 }}
+            link={{ stroke: palette[1], strokeOpacity: 0.4 }}
+            node={
+              <SankeyNode
+                containerWidth={0}
+                colors={nodeColors}
+                x={0} y={0} width={0} height={0}
+                payload={{ name: '', value: 0 }}
+              />
+            }
+          >
+            <Tooltip formatter={(v: number) => [formatCurrency(v), '']} contentStyle={{ background: 'var(--color-surface-raise)', border: '1px solid var(--color-border)', fontSize: 12, borderRadius: 8, color: 'var(--color-text-primary)' }}
+          itemStyle={{ color: 'var(--color-text-primary)' }}
+          labelStyle={{ color: 'var(--color-text-muted)' }}
+          isAnimationActive={false} />
+          </Sankey>
+        </ResponsiveContainer>
+      </div>
+    </div>
   )
 }
 
-function WidgetContent({ widget, filters }: { widget: CanvasWidget; filters: ReturnType<typeof useFilters> }) {
+function WidgetContent({
+  widget,
+  filters,
+  onDrill,
+}: {
+  widget: CanvasWidget
+  filters: ReturnType<typeof useFilters>
+  onDrill: (ctx: DrillContext) => void
+}) {
   switch (widget.type) {
     case 'metric': return <MetricWidget widget={widget} filters={filters} />
-    case 'bar':    return <BarWidget    widget={widget} filters={filters} />
-    case 'line':   return <LineWidget   widget={widget} filters={filters} />
-    case 'pie':    return <PieWidget    widget={widget} filters={filters} />
+    case 'bar':    return <BarWidget    widget={widget} filters={filters} onDrill={onDrill} />
+    case 'line':   return <LineWidget   widget={widget} filters={filters} onDrill={onDrill} />
+    case 'pie':    return <PieWidget    widget={widget} filters={filters} onDrill={onDrill} />
     case 'sankey': return <SankeyWidget filters={filters} />
     default:       return null
   }
@@ -325,10 +611,28 @@ function WidgetModal({
   const [step, setStep] = useState<'type' | 'config'>(isEdit ? 'config' : 'type')
   const [type, setType] = useState<WidgetType>(initial?.type ?? 'bar')
   const [title, setTitle] = useState(initial?.title ?? '')
-  const [source, setSource] = useState<WidgetSource>(initial?.config?.source ?? 'categories')
+  // Use the initial source only if it's valid for the initial type; otherwise
+  // fall back to the first allowed source. Prevents an "edit then change type"
+  // flow from leaving an invalid value in the source dropdown.
+  const initialSource = initial?.config?.source
+  const initialType = initial?.type ?? 'bar'
+  const [source, setSource] = useState<WidgetSource>(
+    initialSource && WIDGET_SOURCES[initialType].includes(initialSource)
+      ? initialSource
+      : WIDGET_SOURCES[initialType][0]
+  )
   const [field, setField] = useState(initial?.config?.field ?? 'total_spent')
-  const [metric] = useState<'amount' | 'count'>(initial?.config?.metric ?? 'amount')
+  const [metric, setMetric] = useState<'amount' | 'count'>(initial?.config?.metric ?? 'amount')
   const [limit, setLimit] = useState(String(initial?.config?.limit ?? 10))
+  const [category, setCategory] = useState(initial?.config?.category ?? 'all')
+  const [merchantQuery, setMerchantQuery] = useState(initial?.config?.merchant_query ?? '')
+  const [rangeOverride, setRangeOverride] = useState(initial?.config?.range_override ?? '')
+
+  const { data: userCategories = [] } = useQuery({
+    queryKey: ['user-categories'],
+    queryFn: () => categoriesApi.userCategories(),
+    staleTime: 300_000,
+  })
 
   const pickType = (t: WidgetType) => {
     setType(t)
@@ -338,8 +642,24 @@ function WidgetModal({
   }
 
   const handleSave = () => {
-    onSave({ type, title: title || TYPE_META[type].label, config: { source, field, metric, limit: parseInt(limit) || 10 } })
+    const clampedLimit = Math.max(3, Math.min(30, parseInt(limit) || 10))
+    onSave({
+      type,
+      title: title || TYPE_META[type].label,
+      config: {
+        source,
+        field,
+        metric,
+        limit: clampedLimit,
+        category: category === 'all' ? undefined : category,
+        merchant_query: merchantQuery.trim() || undefined,
+        range_override: rangeOverride || undefined,
+      },
+    })
   }
+
+  const supportsCount = type === 'bar' || type === 'line' || type === 'pie'
+  const supportsFilters = type !== 'sankey' && type !== 'metric'
 
   return (
     <div className="fixed inset-0 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.5)', zIndex: 50 }} onClick={(e) => e.target === e.currentTarget && onClose()}>
@@ -399,6 +719,59 @@ function WidgetModal({
                   <input type="number" value={limit} onChange={(e) => setLimit(e.target.value)} min={3} max={30} style={{ fontSize: 13, width: '100%' }} />
                 </div>
               )}
+
+              {supportsCount && (
+                <div>
+                  <label style={{ fontSize: 11, color: 'var(--color-text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 6 }}>Measure</label>
+                  <div className="flex rounded-lg p-1" style={{ background: 'var(--color-surface-raise)', border: '1px solid var(--color-border)' }}>
+                    {(['amount', 'count'] as const).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => setMetric(m)}
+                        className="flex-1 py-1.5 rounded-md transition-all"
+                        style={{
+                          fontSize: 12,
+                          background: metric === m ? 'var(--color-surface)' : 'transparent',
+                          color: metric === m ? 'var(--color-text-primary)' : 'var(--color-text-muted)',
+                          fontWeight: metric === m ? 600 : 400,
+                          border: metric === m ? '1px solid var(--color-border)' : '1px solid transparent',
+                        }}
+                      >
+                        {m === 'amount' ? 'Dollar amount' : 'Transaction count'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {supportsFilters && (
+                <>
+                  <div>
+                    <label style={{ fontSize: 11, color: 'var(--color-text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 6 }}>Date range override</label>
+                    <select value={rangeOverride} onChange={(e) => setRangeOverride(e.target.value)} style={{ fontSize: 13, width: '100%' }}>
+                      {RANGE_OPTIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+                    </select>
+                  </div>
+                  {/* Category filter — doesn't apply to the categories source itself */}
+                  {source !== 'categories' && (
+                    <div>
+                      <label style={{ fontSize: 11, color: 'var(--color-text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 6 }}>Filter by category</label>
+                      <select value={category} onChange={(e) => setCategory(e.target.value)} style={{ fontSize: 13, width: '100%' }}>
+                        <option value="all">All categories</option>
+                        {userCategories.map((c) => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </div>
+                  )}
+                  {source !== 'merchants' && (
+                    <div>
+                      <label style={{ fontSize: 11, color: 'var(--color-text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 6 }}>Filter by merchant (contains)</label>
+                      <input type="text" value={merchantQuery} onChange={(e) => setMerchantQuery(e.target.value)} placeholder="e.g. Amazon, Starbucks" style={{ fontSize: 13, width: '100%' }} />
+                    </div>
+                  )}
+                </>
+              )}
+
               <div className="flex gap-2 pt-2">
                 <button onClick={handleSave} className="flex-1 rounded-lg font-medium" style={{ background: 'var(--color-accent)', color: '#fff', padding: '8px 0', fontSize: 13 }}>
                   {isEdit ? 'Update' : 'Add to canvas'}
@@ -408,6 +781,82 @@ function WidgetModal({
                 </button>
               </div>
             </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Drill-down panel ──────────────────────────────────────────────────────────
+
+function DrillDownPanel({ ctx, onClose }: { ctx: NonNullable<DrillContext>; onClose: () => void }) {
+  const { data: txns = [], isLoading } = useQuery({
+    queryKey: ['drill', ctx.filters],
+    queryFn: () => transactionsApi.list(ctx.filters),
+    staleTime: 30_000,
+  })
+
+  const total = txns.reduce((s: number, t: Transaction) => s + (t.amount || 0), 0)
+
+  return (
+    <div
+      className="fixed inset-0 flex justify-end"
+      style={{ background: 'rgba(0,0,0,0.4)', zIndex: 60 }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div
+        className="flex flex-col"
+        style={{
+          background: 'var(--color-surface)',
+          borderLeft: '1px solid var(--color-border)',
+          width: 'min(480px, 90vw)',
+          height: '100%',
+          boxShadow: '-4px 0 24px rgba(0,0,0,0.2)',
+        }}
+      >
+        <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--color-border)' }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 11, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600 }}>Drill-down</div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {ctx.title}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ color: 'var(--color-text-muted)', flexShrink: 0 }}><X size={18} /></button>
+        </div>
+
+        <div className="px-5 py-3 flex items-center justify-between" style={{ borderBottom: '1px solid var(--color-border)', fontSize: 12, color: 'var(--color-text-muted)' }}>
+          <span>{isLoading ? 'Loading…' : `${txns.length} transaction${txns.length === 1 ? '' : 's'}`}</span>
+          {!isLoading && txns.length > 0 && (
+            <span style={{ fontFamily: 'monospace', color: 'var(--color-text-primary)', fontWeight: 600 }}>{formatCurrency(total)}</span>
+          )}
+        </div>
+
+        <div className="flex-1 overflow-auto">
+          {isLoading ? (
+            <div className="p-5 text-center" style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Loading transactions…</div>
+          ) : txns.length === 0 ? (
+            <div className="p-5 text-center" style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>No transactions match this slice.</div>
+          ) : (
+            txns.map((tx: Transaction) => (
+              <div
+                key={tx.id}
+                className="px-5 py-3"
+                style={{ borderBottom: '1px solid var(--color-border)', display: 'flex', justifyContent: 'space-between', gap: 12 }}
+              >
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--color-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {tx.merchant_normalized || tx.name}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 2 }}>
+                    {formatDate(tx.date)} · {tx.category}
+                  </div>
+                </div>
+                <div style={{ fontSize: 13, fontFamily: 'monospace', fontWeight: 600, color: 'var(--color-text-primary)', flexShrink: 0 }}>
+                  {formatCurrency(tx.amount)}
+                </div>
+              </div>
+            ))
           )}
         </div>
       </div>
@@ -470,6 +919,7 @@ export default function Canvas() {
   const [confirmDelete, setConfirmDelete] = useState<CanvasMeta | null>(null)
   const [layout, setLayout] = useState<CanvasLayoutItem[]>([])
   const [widgets, setWidgets] = useState<Record<string, CanvasWidget>>({})
+  const [drill, setDrill] = useState<DrillContext>(null)
 
   // Load canvas list
   const { data: canvasList = [], isLoading: listLoading } = useQuery({
@@ -712,7 +1162,7 @@ export default function Canvas() {
                     <button onClick={() => removeWidget(item.i)} style={{ color: 'var(--color-text-muted)', lineHeight: 1, flexShrink: 0 }}><X size={12} /></button>
                   </div>
                   <div className="flex-1 min-h-0" style={{ padding: widget.type === 'metric' ? 16 : '8px 4px 4px' }}>
-                    <WidgetContent widget={widget} filters={filters} />
+                    <WidgetContent widget={widget} filters={filters} onDrill={setDrill} />
                   </div>
                 </div>
               </div>
@@ -725,6 +1175,8 @@ export default function Canvas() {
       {modal && typeof modal === 'object' && editingWidget && (
         <WidgetModal initial={editingWidget} onSave={(def) => updateWidget(modal.id, def)} onClose={() => setModal(null)} />
       )}
+
+      {drill && <DrillDownPanel ctx={drill} onClose={() => setDrill(null)} />}
 
       {/* Delete canvas confirmation */}
       {confirmDelete && (

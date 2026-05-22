@@ -753,7 +753,10 @@ export default function Transactions() {
                   </Pie>
                   <Tooltip
                     formatter={(v: number) => formatCurrency(v)}
-                    contentStyle={{ background: 'var(--color-surface-raise)', border: '1px solid var(--color-border)', borderRadius: 8, fontSize: 12 }}
+                    contentStyle={{ background: 'var(--color-surface-raise)', border: '1px solid var(--color-border)', borderRadius: 8, fontSize: 12, color: 'var(--color-text-primary)' }}
+                    itemStyle={{ color: 'var(--color-text-primary)' }}
+                    labelStyle={{ color: 'var(--color-text-muted)' }}
+                    isAnimationActive={false}
                   />
                 </PieChart>
               </ResponsiveContainer>
