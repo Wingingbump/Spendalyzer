@@ -13,6 +13,20 @@ from core.db import fetch_transactions, get_merchant_overrides, get_merchant_cat
 # TTL is a safety net; mutations explicitly call invalidate_user_cache().
 _df_cache: TTLCache = TTLCache(maxsize=256, ttl=300)
 _df_cache_lock = threading.Lock()
+# Per-user build locks coalesce concurrent cold-cache builds. Without this, the
+# 6-8 parallel queries the Overview page fires on first load all run the full
+# DataFrame build in parallel, which on a slow host produces gateway timeouts.
+_user_build_locks: dict[int, threading.Lock] = {}
+_user_build_locks_meta = threading.Lock()
+
+
+def _get_build_lock(user_id: int) -> threading.Lock:
+    with _user_build_locks_meta:
+        lock = _user_build_locks.get(user_id)
+        if lock is None:
+            lock = threading.Lock()
+            _user_build_locks[user_id] = lock
+        return lock
 
 
 def invalidate_user_cache(user_id: int) -> None:
@@ -28,6 +42,17 @@ def load_data(user_id: int) -> pd.DataFrame:
     if cached is not None:
         return cached
 
+    # Coalesce concurrent builds: only one request per user actually rebuilds;
+    # the rest wait, then re-read from the now-warm cache.
+    with _get_build_lock(user_id):
+        with _df_cache_lock:
+            cached = _df_cache.get(user_id)
+        if cached is not None:
+            return cached
+        return _build_df(user_id)
+
+
+def _build_df(user_id: int) -> pd.DataFrame:
     rows = fetch_transactions(user_id)
     if not rows:
         df = pd.DataFrame({

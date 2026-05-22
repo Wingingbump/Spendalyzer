@@ -56,6 +56,17 @@ def _background_sync(user_id: int) -> None:
         logging.getLogger(__name__).warning(f"Background sync failed for user {user_id}: {e}")
 
 
+def _background_warmup(user_id: int) -> None:
+    # Pre-build the per-user DataFrame cache so the Overview page lands on a
+    # warm cache instead of triggering an 8-way cache stampede on first load.
+    try:
+        from core import insights as ins
+        ins.load_data(user_id)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Background warmup failed for user {user_id}: {e}")
+
+
 @router.post("/login")
 @limiter.limit("10/minute")
 def login(request: Request, body: LoginBody, response: Response, background_tasks: BackgroundTasks):
@@ -74,6 +85,10 @@ def login(request: Request, body: LoginBody, response: Response, background_task
     last = get_last_synced_at(user["id"])
     if not last or str(last)[:10] < datetime.date.today().isoformat():
         background_tasks.add_task(_background_sync, user["id"])
+
+    # Warm the DataFrame cache so Overview lands on a hot cache. Runs after
+    # sync (if scheduled), so the warmup reflects any newly-pulled transactions.
+    background_tasks.add_task(_background_warmup, user["id"])
 
     return {"id": user["id"], "username": user["username"]}
 
