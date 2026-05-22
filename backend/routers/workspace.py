@@ -153,16 +153,18 @@ def _detect_recurring(df: pd.DataFrame, user_rules: list[dict] | None = None) ->
         group = group.sort_values("date")
         amounts = group["amount"].tolist()
 
-        # Amount must be consistent: max - min <= $1.00 (absolute tolerance).
-        # Percentage-based tolerance breaks on cheap subscriptions — a $2.99 iCloud
-        # charge with $0.30 rounding has 10% deviation but is clearly a fixed fee.
-        # $1.00 absolute handles tax rounding at any price without letting variable
-        # merchants (grocery, restaurant) through since their spreads are $10–$80.
+        # Amount must be consistent. Use $1.00 absolute OR 5% of median, whichever
+        # is larger. $1.00 handles tax rounding on cheap subs (e.g. $2.99 iCloud);
+        # the 5% floor catches mid-priced subs whose price gets bumped (e.g. AMC
+        # going from $25.99 → $27.03 is a 4% hike, clearly still a subscription).
+        # Variable merchants (grocery, restaurants) routinely swing $10–$80, so
+        # 5% on a $30 median still rejects them.
         sorted_amt = sorted(amounts)
         median_amt = sorted_amt[len(sorted_amt) // 2]
         if median_amt <= 0:
             continue
-        if max(amounts) - min(amounts) > 1.00:
+        amount_tolerance = max(1.00, median_amt * 0.05)
+        if max(amounts) - min(amounts) > amount_tolerance:
             continue
 
         # Date interval analysis — use median interval, not average.
