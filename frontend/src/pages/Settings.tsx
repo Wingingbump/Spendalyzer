@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { Trash2, Plus, Sun, Moon, CreditCard, Shield, Palette, Tag, AlertTriangle, UserCircle, FileText, ChevronDown, ChevronUp, Check } from 'lucide-react'
+import { Trash2, Plus, Sun, Moon, CreditCard, Shield, Palette, Tag, AlertTriangle, UserCircle, FileText, ChevronDown, ChevronUp, Check, Lock, Eye, XCircle } from 'lucide-react'
 import { accountsApi, plaidApi, settingsApi, categoriesApi } from '../lib/api'
 import { useTheme, type DarkPalette, type LightPalette } from '../context/ThemeContext'
 import { useAuth } from '../context/AuthContext'
@@ -630,6 +630,29 @@ export default function Settings() {
                 </button>
               </div>
             ))}
+          </div>
+        )}
+
+        {accounts.length === 0 && !loadingAccounts && (
+          <div
+            className="rounded-lg p-3 mb-3"
+            style={{ background: 'var(--color-surface-raise)', border: '1px solid var(--color-border)' }}
+          >
+            <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
+              Before you connect
+            </p>
+            <div className="space-y-2">
+              {[
+                { Icon: Lock,    text: 'Plaid handles your bank login — we never see your credentials.' },
+                { Icon: Eye,     text: 'Read-only access. We can view transactions but cannot move money.' },
+                { Icon: XCircle, text: 'Disconnect any account or delete your data anytime in Settings.' },
+              ].map(({ Icon, text }) => (
+                <div key={text} className="flex items-start gap-2">
+                  <Icon size={13} style={{ color: 'var(--color-positive)', marginTop: 1, flexShrink: 0 }} />
+                  <p style={{ fontSize: 12, color: 'var(--color-text-secondary)', lineHeight: 1.45 }}>{text}</p>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

@@ -73,8 +73,10 @@ export default function Sidebar() {
 
   const syncMutation = useMutation({
     mutationFn: ({ fullSync }: { fullSync: boolean }) => syncApi.sync(fullSync),
-    onSuccess: () => {
-      qc.invalidateQueries()
+    onSuccess: async () => {
+      // Refetch every query (not just active ones) and keep isPending true
+      // until the data is back so the spinner aligns with the visible refresh.
+      await qc.invalidateQueries({ refetchType: 'all' })
     },
   })
 

@@ -179,8 +179,8 @@ function DataHealthCard() {
 
   const syncMutation = useMutation({
     mutationFn: () => syncApi.sync(true),
-    onSuccess: () => {
-      qc.invalidateQueries()
+    onSuccess: async () => {
+      await qc.invalidateQueries({ refetchType: 'all' })
     },
   })
 
@@ -346,10 +346,15 @@ export default function Overview() {
     : 0
   const currentMonthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`
 
-  // ── Savings proxy (this month credits vs debits) ───────────────────────────
-  const savingsPct = summary?.total_credits && summary.total_credits > 0
-    ? Math.round((1 - summary.this_month / summary.total_credits) * 100)
+  // ── Daily burn rate: this month's spend per elapsed day vs last month's daily avg ──
+  const daysInLastMonth = new Date(today.getFullYear(), today.getMonth(), 0).getDate()
+  const lastMonthDailyAvg = summary?.last_month && daysInLastMonth > 0
+    ? summary.last_month / daysInLastMonth
     : null
+  const burnVsLastPct = lastMonthDailyAvg && lastMonthDailyAvg > 0
+    ? Math.round(((dailyRate - lastMonthDailyAvg) / lastMonthDailyAvg) * 100)
+    : null
+  const burnIsUnder = burnVsLastPct !== null && burnVsLastPct <= 0
 
   return (
     <div className="space-y-5 fade-in">
@@ -397,10 +402,14 @@ export default function Overview() {
           isLoading={loadingSummary}
         />
         <MetricCard
-          label="Est. Savings Rate"
-          value={loadingSummary ? '—' : savingsPct !== null ? `${savingsPct}%` : '—'}
-          sub={summary ? `Net ${formatCurrency(summary.net_spend)}` : undefined}
-          subPositive={savingsPct !== null && savingsPct > 0}
+          label="Daily Burn Rate"
+          value={loadingSummary ? '—' : `${formatCurrency(dailyRate)}/day`}
+          sub={
+            !loadingSummary && burnVsLastPct !== null
+              ? `${burnIsUnder ? '↓' : '↑'} ${Math.abs(burnVsLastPct)}% vs last month avg`
+              : undefined
+          }
+          subPositive={burnIsUnder}
           isLoading={loadingSummary}
         />
       </div>

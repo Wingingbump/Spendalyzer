@@ -9,7 +9,7 @@ import { workspaceApi, transactionsApi, insightsApi, advisorApi, ledgerApi } fro
 import type { CustomGroup, Goal, LedgerRow } from '../lib/api'
 import { useWorkspace } from '../context/WorkspaceContext'
 import { useFilters } from '../context/FilterContext'
-import { formatCurrency, formatDate, CHART_COLORS_DARK } from '../lib/utils'
+import { formatCurrency, formatDate, getCategoryColor } from '../lib/utils'
 
 export const PANEL_WIDTH = 300
 
@@ -17,17 +17,20 @@ export const PANEL_WIDTH = 300
 
 type TabId = 'recent' | 'insights' | 'budgets' | 'recurring' | 'groups'
 
-const ROUTE_TABS: Record<string, TabId[]> = {
-  '/overview':     ['recent',    'budgets',   'recurring'],
-  '/transactions': ['insights',  'groups',    'budgets'],
-  '/ledger':       ['recurring', 'budgets',   'groups'],
-  '/categories':   ['budgets',   'recurring', 'groups'],
-  '/merchants':    ['budgets',   'recurring', 'groups'],
-  '/canvas':       ['groups',    'budgets',   'recurring'],
-  '/advisor':      ['budgets',   'recent',    'insights'],
-  '/settings':     ['budgets',   'recurring', 'groups'],
+// All five tabs render on every page; only the initial selection changes.
+const ALL_TABS: TabId[] = ['recent', 'insights', 'budgets', 'recurring', 'groups']
+
+const ROUTE_DEFAULT_TAB: Record<string, TabId> = {
+  '/overview':     'recent',
+  '/transactions': 'insights',
+  '/ledger':       'recurring',
+  '/categories':   'budgets',
+  '/merchants':    'budgets',
+  '/canvas':       'groups',
+  '/advisor':      'budgets',
+  '/settings':     'budgets',
 }
-const DEFAULT_TABS: TabId[] = ['budgets', 'recurring', 'groups']
+const FALLBACK_DEFAULT_TAB: TabId = 'budgets'
 
 const TAB_LABEL: Record<TabId, string> = {
   recent:    'Recent',
@@ -123,41 +126,74 @@ function RecentTab() {
 // ── Insights tab ──────────────────────────────────────────────────────────────
 
 function InsightsTab() {
-  const { range, institution, account } = useFilters()
-  const params = { range, institution, account }
+  const { institution, account } = useFilters()
+  const [catScope, setCatScope] = useState<'month' | 'all'>('month')
 
-  const { data: categories = [], isLoading: loadingCat } = useQuery({
-    queryKey: ['categories', range, institution, account],
-    queryFn: () => insightsApi.categories(params),
+  // Ambient stats — independent of the global range filter so users have a
+  // stable reference. Account/institution filters still apply.
+  const { data: allSummary, isLoading: loadingAll } = useQuery({
+    queryKey: ['summary', 'all', institution, account],
+    queryFn: () => insightsApi.summary({ range: 'all', institution, account }),
+    staleTime: 60_000,
   })
 
-  const { data: summary, isLoading: loadingSummary } = useQuery({
-    queryKey: ['summary', range, institution, account],
-    queryFn: () => insightsApi.summary(params),
+  // By-category bars follow the selected tile (Month or All-time).
+  const now = new Date()
+  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  const catRange = catScope === 'month' ? currentMonth : 'all'
+  const { data: categories = [], isLoading: loadingCat } = useQuery({
+    queryKey: ['categories', catRange, institution, account],
+    queryFn: () => insightsApi.categories({ range: catRange, institution, account }),
   })
 
   const top5 = categories.slice(0, 5)
 
+  const monthDelta = allSummary?.delta_pct
+  const tiles: Array<{ id: 'month' | 'all'; label: string; value?: number; deltaPct?: number }> = [
+    { id: 'month', label: 'Month', value: allSummary?.this_month, deltaPct: monthDelta },
+    { id: 'all', label: 'All-time', value: allSummary?.total_spent },
+  ]
+
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-2">
-        {[
-          { label: 'Total', value: summary?.total_spent, loading: loadingSummary },
-          { label: 'This Month', value: summary?.this_month, loading: loadingSummary },
-        ].map(({ label, value, loading }) => (
-          <div key={label} className="rounded-lg p-3" style={{ background: 'var(--color-surface-raise)' }}>
-            <p style={{ fontSize: 10, color: 'var(--color-text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</p>
-            {loading
-              ? <div className="skeleton mt-1" style={{ height: 16, width: 60 }} />
-              : <p style={{ fontSize: 14, fontWeight: 700, fontFamily: 'monospace', color: 'var(--color-text-primary)', marginTop: 2 }}>{value !== undefined ? formatCurrency(value) : '—'}</p>
-            }
-          </div>
-        ))}
+        {tiles.map(({ id, label, value, deltaPct }) => {
+          const active = catScope === id
+          const showDelta = deltaPct !== undefined && deltaPct !== null && isFinite(deltaPct)
+          const up = (deltaPct ?? 0) > 0
+          const deltaColor = !showDelta
+            ? 'var(--color-text-muted)'
+            : up ? 'var(--color-negative)' : 'var(--color-positive)'
+          return (
+            <button
+              key={id}
+              onClick={() => setCatScope(id)}
+              className="rounded-lg p-3 text-left"
+              style={{
+                background: 'var(--color-surface-raise)',
+                border: `1px solid ${active ? 'var(--color-accent)' : 'transparent'}`,
+                cursor: 'pointer',
+                transition: 'border-color 0.15s',
+              }}
+            >
+              <p style={{ fontSize: 10, color: 'var(--color-text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</p>
+              {loadingAll
+                ? <div className="skeleton mt-1" style={{ height: 16, width: 60 }} />
+                : <p style={{ fontSize: 14, fontWeight: 700, fontFamily: 'monospace', color: 'var(--color-text-primary)', marginTop: 2 }}>{value !== undefined ? formatCurrency(value) : '—'}</p>
+              }
+              {showDelta && !loadingAll && (
+                <p style={{ fontSize: 10, fontWeight: 600, color: deltaColor, marginTop: 2 }}>
+                  {up ? '▲' : '▼'} {Math.abs(deltaPct!).toFixed(0)}% vs last
+                </p>
+              )}
+            </button>
+          )
+        })}
       </div>
 
       <div>
         <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10 }}>
-          By Category
+          By Category · {catScope === 'month' ? 'this month' : 'all-time'}
         </p>
         {loadingCat ? (
           <div className="space-y-3">
@@ -167,22 +203,25 @@ function InsightsTab() {
           <p style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>No data</p>
         ) : (
           <div className="space-y-3">
-            {top5.map((cat, i) => (
-              <div key={cat.category}>
-                <div className="flex items-center justify-between mb-1">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <div style={{ width: 7, height: 7, borderRadius: '50%', background: CHART_COLORS_DARK[i % CHART_COLORS_DARK.length], flexShrink: 0 }} />
-                    <span style={{ fontSize: 11, color: 'var(--color-text-secondary)' }} className="truncate">{cat.category}</span>
+            {top5.map((cat) => {
+              const color = getCategoryColor(cat.category)
+              return (
+                <div key={cat.category}>
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div style={{ width: 7, height: 7, borderRadius: '50%', background: color, flexShrink: 0 }} />
+                      <span style={{ fontSize: 11, color: 'var(--color-text-secondary)' }} className="truncate">{cat.category}</span>
+                    </div>
+                    <span style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--color-text-primary)', flexShrink: 0, marginLeft: 6 }}>
+                      {formatCurrency(cat.total)}
+                    </span>
                   </div>
-                  <span style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--color-text-primary)', flexShrink: 0, marginLeft: 6 }}>
-                    {formatCurrency(cat.total)}
-                  </span>
+                  <div className="rounded-full overflow-hidden" style={{ height: 4, background: 'var(--color-border)' }}>
+                    <div className="h-full rounded-full" style={{ width: `${cat.pct}%`, background: color }} />
+                  </div>
                 </div>
-                <div className="rounded-full overflow-hidden" style={{ height: 4, background: 'var(--color-border)' }}>
-                  <div className="h-full rounded-full" style={{ width: `${cat.pct}%`, background: CHART_COLORS_DARK[i % CHART_COLORS_DARK.length] }} />
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </div>
@@ -1060,12 +1099,12 @@ export default function RightPanel({ isOpen, onToggle }: RightPanelProps) {
 
   if (PANEL_HIDDEN_ROUTES.includes(location.pathname)) return null
 
-  const tabs = ROUTE_TABS[location.pathname] ?? DEFAULT_TABS
-  const [activeTab, setActiveTab] = useState<TabId>(tabs[0])
+  const [activeTab, setActiveTab] = useState<TabId>(
+    ROUTE_DEFAULT_TAB[location.pathname] ?? FALLBACK_DEFAULT_TAB
+  )
 
   useEffect(() => {
-    const newTabs = ROUTE_TABS[location.pathname] ?? DEFAULT_TABS
-    setActiveTab(newTabs[0])
+    setActiveTab(ROUTE_DEFAULT_TAB[location.pathname] ?? FALLBACK_DEFAULT_TAB)
   }, [location.pathname])
 
   return (
@@ -1116,18 +1155,19 @@ export default function RightPanel({ isOpen, onToggle }: RightPanelProps) {
           {/* Tab bar */}
           <div
             className="flex flex-shrink-0"
-            style={{ borderBottom: '1px solid var(--color-border)', paddingTop: 14, paddingLeft: 8, paddingRight: 8 }}
+            style={{ borderBottom: '1px solid var(--color-border)', paddingTop: 14, paddingLeft: 4, paddingRight: 4 }}
           >
-            {tabs.map((tab) => {
+            {ALL_TABS.map((tab) => {
               const Icon = TAB_ICON[tab]
               const isActive = activeTab === tab
               return (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
-                  className="flex items-center gap-1.5 px-3 pb-2.5 flex-1 justify-center"
+                  className="flex flex-col items-center gap-0.5 px-1 pb-2 flex-1 justify-center"
+                  title={TAB_LABEL[tab]}
                   style={{
-                    fontSize: 11,
+                    fontSize: 10,
                     fontWeight: isActive ? 600 : 500,
                     color: isActive ? 'var(--color-accent-text)' : 'var(--color-text-muted)',
                     borderTop: 'none',
@@ -1141,7 +1181,7 @@ export default function RightPanel({ isOpen, onToggle }: RightPanelProps) {
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  <Icon size={11} />
+                  <Icon size={12} />
                   {TAB_LABEL[tab]}
                 </button>
               )
