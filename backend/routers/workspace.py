@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from backend.dependencies import get_current_user
 from core import insights as ins
-from core.db import get_conn
+from core.db import get_user_conn
 
 router = APIRouter(prefix="/workspace", tags=["workspace"])
 
@@ -38,7 +38,7 @@ class BudgetBody(BaseModel):
 def list_budgets(current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
 
-    with get_conn() as conn:
+    with get_user_conn(user_id) as conn:
         rows = conn.execute(
             "SELECT id, category, amount, period FROM budgets WHERE user_id = %s ORDER BY category",
             (user_id,)
@@ -70,7 +70,7 @@ def list_budgets(current_user: dict = Depends(get_current_user)):
 @router.put("/budgets/{category}")
 def upsert_budget(category: str, body: BudgetBody, current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
-    with get_conn() as conn:
+    with get_user_conn(user_id) as conn:
         conn.execute("""
             INSERT INTO budgets (user_id, category, amount, period)
             VALUES (%s, %s, %s, %s)
@@ -83,7 +83,7 @@ def upsert_budget(category: str, body: BudgetBody, current_user: dict = Depends(
 @router.delete("/budgets/{category}")
 def delete_budget(category: str, current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
-    with get_conn() as conn:
+    with get_user_conn(user_id) as conn:
         conn.execute(
             "DELETE FROM budgets WHERE user_id = %s AND category = %s",
             (user_id, category)
@@ -221,7 +221,7 @@ def _detect_recurring(df: pd.DataFrame, user_rules: list[dict] | None = None) ->
 
 
 def _fetch_user_rules(user_id: int) -> list[dict]:
-    with get_conn() as conn:
+    with get_user_conn(user_id) as conn:
         rows = conn.execute("""
             SELECT id, merchant_key, amount_center, amount_tolerance_abs,
                    amount_tolerance_pct, label, frequency_hint
@@ -287,7 +287,7 @@ def list_recurring_rules(current_user: dict = Depends(get_current_user)):
 @router.post("/recurring/rules")
 def create_recurring_rule(body: RecurringRuleBody, current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
-    with get_conn() as conn:
+    with get_user_conn(user_id) as conn:
         row = conn.execute("""
             INSERT INTO user_recurring_rules
                 (user_id, merchant_key, amount_center, amount_tolerance_abs,
@@ -325,7 +325,7 @@ def create_rule_from_transaction(
     tx = row.iloc[0]
     merchant_key = (tx.get("merchant_normalized") or "").strip() or str(tx["name"])
     amount = float(tx["amount"])
-    with get_conn() as conn:
+    with get_user_conn(user_id) as conn:
         result = conn.execute("""
             INSERT INTO user_recurring_rules
                 (user_id, merchant_key, amount_center, label, frequency_hint)
@@ -364,7 +364,7 @@ def update_recurring_rule(
         return {"ok": True}
     fields.append("updated_at = NOW()")
     params.extend([rule_id, user_id])
-    with get_conn() as conn:
+    with get_user_conn(user_id) as conn:
         conn.execute(
             f"UPDATE user_recurring_rules SET {', '.join(fields)} WHERE id = %s AND user_id = %s",
             tuple(params),
@@ -375,7 +375,7 @@ def update_recurring_rule(
 @router.delete("/recurring/rules/{rule_id}")
 def delete_recurring_rule(rule_id: int, current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
-    with get_conn() as conn:
+    with get_user_conn(user_id) as conn:
         conn.execute(
             "DELETE FROM user_recurring_rules WHERE id = %s AND user_id = %s",
             (rule_id, user_id),
@@ -401,7 +401,7 @@ class AddTransactionBody(BaseModel):
 def list_groups(current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
 
-    with get_conn() as conn:
+    with get_user_conn(user_id) as conn:
         rows = conn.execute(
             "SELECT id, name, color, goal FROM custom_groups WHERE user_id = %s ORDER BY created_at",
             (user_id,)
@@ -413,7 +413,7 @@ def list_groups(current_user: dict = Depends(get_current_user)):
 
     df = ins.load_data(user_id)
 
-    with get_conn() as conn:
+    with get_user_conn(user_id) as conn:
         for g in groups:
             tx_rows = conn.execute(
                 "SELECT transaction_id FROM group_transactions WHERE group_id = %s",
@@ -434,7 +434,7 @@ def list_groups(current_user: dict = Depends(get_current_user)):
 @router.post("/groups")
 def create_group(body: GroupBody, current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
-    with get_conn() as conn:
+    with get_user_conn(user_id) as conn:
         row = conn.execute("""
             INSERT INTO custom_groups (user_id, name, color, goal)
             VALUES (%s, %s, %s, %s)
@@ -446,7 +446,7 @@ def create_group(body: GroupBody, current_user: dict = Depends(get_current_user)
 @router.put("/groups/{group_id}")
 def update_group(group_id: int, body: GroupBody, current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
-    with get_conn() as conn:
+    with get_user_conn(user_id) as conn:
         conn.execute("""
             UPDATE custom_groups SET name = %s, color = %s, goal = %s
             WHERE id = %s AND user_id = %s
@@ -457,7 +457,7 @@ def update_group(group_id: int, body: GroupBody, current_user: dict = Depends(ge
 @router.delete("/groups/{group_id}")
 def delete_group(group_id: int, current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
-    with get_conn() as conn:
+    with get_user_conn(user_id) as conn:
         conn.execute(
             "DELETE FROM custom_groups WHERE id = %s AND user_id = %s",
             (group_id, user_id)
@@ -469,7 +469,7 @@ def delete_group(group_id: int, current_user: dict = Depends(get_current_user)):
 def group_transactions(group_id: int, current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
 
-    with get_conn() as conn:
+    with get_user_conn(user_id) as conn:
         exists = conn.execute(
             "SELECT id FROM custom_groups WHERE id = %s AND user_id = %s",
             (group_id, user_id)
@@ -511,7 +511,7 @@ def group_transactions(group_id: int, current_user: dict = Depends(get_current_u
 @router.post("/groups/{group_id}/transactions")
 def add_transaction(group_id: int, body: AddTransactionBody, current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
-    with get_conn() as conn:
+    with get_user_conn(user_id) as conn:
         exists = conn.execute(
             "SELECT id FROM custom_groups WHERE id = %s AND user_id = %s",
             (group_id, user_id)
@@ -534,7 +534,7 @@ def add_transaction(group_id: int, body: AddTransactionBody, current_user: dict 
 @router.delete("/groups/{group_id}/transactions/{transaction_id}")
 def remove_transaction(group_id: int, transaction_id: str, current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
-    with get_conn() as conn:
+    with get_user_conn(user_id) as conn:
         exists = conn.execute(
             "SELECT id FROM custom_groups WHERE id = %s AND user_id = %s",
             (group_id, user_id)

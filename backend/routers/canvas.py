@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 from backend.dependencies import apply_filters, get_current_user
 from core import insights as ins
-from core.db import get_conn
+from core.db import get_user_conn
 
 router = APIRouter(prefix="/canvas", tags=["canvas"])
 
@@ -26,7 +26,7 @@ class CanvasSave(BaseModel):
 
 @router.get("")
 def list_canvases(current_user: dict = Depends(get_current_user)):
-    with get_conn() as conn:
+    with get_user_conn(current_user["id"]) as conn:
         rows = conn.execute(
             "SELECT id, name, created_at FROM canvases WHERE user_id = %s ORDER BY created_at",
             (current_user["id"],)
@@ -36,7 +36,7 @@ def list_canvases(current_user: dict = Depends(get_current_user)):
 
 @router.post("")
 def create_canvas(body: CanvasCreate, current_user: dict = Depends(get_current_user)):
-    with get_conn() as conn:
+    with get_user_conn(current_user["id"]) as conn:
         count = conn.execute(
             "SELECT COUNT(*) AS n FROM canvases WHERE user_id = %s",
             (current_user["id"],)
@@ -172,7 +172,7 @@ def get_sankey(
 
 @router.get("/{canvas_id}")
 def load_canvas(canvas_id: int, current_user: dict = Depends(get_current_user)):
-    with get_conn() as conn:
+    with get_user_conn(current_user["id"]) as conn:
         row = conn.execute(
             "SELECT id, name, layout, widgets FROM canvases WHERE id = %s AND user_id = %s",
             (canvas_id, current_user["id"])
@@ -189,7 +189,7 @@ def load_canvas(canvas_id: int, current_user: dict = Depends(get_current_user)):
 
 @router.put("/{canvas_id}")
 def save_canvas(canvas_id: int, body: CanvasSave, current_user: dict = Depends(get_current_user)):
-    with get_conn() as conn:
+    with get_user_conn(current_user["id"]) as conn:
         updated = conn.execute("""
             UPDATE canvases
             SET name = %s, layout = %s, widgets = %s
@@ -209,7 +209,7 @@ def save_canvas(canvas_id: int, body: CanvasSave, current_user: dict = Depends(g
 
 @router.delete("/{canvas_id}")
 def delete_canvas(canvas_id: int, current_user: dict = Depends(get_current_user)):
-    with get_conn() as conn:
+    with get_user_conn(current_user["id"]) as conn:
         conn.execute(
             "DELETE FROM canvases WHERE id = %s AND user_id = %s",
             (canvas_id, current_user["id"])

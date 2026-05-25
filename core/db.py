@@ -63,6 +63,18 @@ def get_conn():
         pool.putconn(raw)
 
 
+@contextmanager
+def get_user_conn(user_id: int):
+    """Open a connection with RLS scoped to a specific user.
+
+    With FORCE ROW LEVEL SECURITY enabled on tenant tables, every query in
+    the transaction will be filtered to rows where user_id matches.
+    """
+    with get_conn() as conn:
+        conn.execute("SET LOCAL app.current_user_id = %s", (str(int(user_id)),))
+        yield conn
+
+
 # ── Schema bootstrap ─────────────────────────────────────────────────────────────
 
 def _run_migrations():
@@ -572,12 +584,15 @@ def _run_migrations():
 
         # ── Row-Level Security ───────────────────────────────────────────────────
         # Even if application code forgets WHERE user_id = %s, the DB blocks it.
+        # FORCE is required — without it, the table owner (this app's DB role)
+        # silently bypasses the policy and RLS becomes a no-op.
         for table in ("transactions", "connected_accounts",
                       "budgets", "canvases", "custom_groups", "category_map",
                       "user_goals", "financial_events", "user_profile",
                       "financial_snapshots", "conversation_memory", "advice_history",
                       "nudges"):
             conn.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
+            conn.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
             conn.execute(f"""
                 DO $$ BEGIN
                     IF NOT EXISTS (
@@ -1906,7 +1921,7 @@ def save_nudge(
 ) -> int:
     import json as _json
     with get_conn() as conn:
-        conn.execute(f"SET LOCAL app.current_user_id = '{user_id}'")
+        conn.execute("SET LOCAL app.current_user_id = %s", (str(user_id),))
         row = conn.execute(
             """INSERT INTO nudges (user_id, type, severity, title, body, data)
                VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
@@ -1918,7 +1933,7 @@ def save_nudge(
 def get_active_nudges(user_id: int) -> list[dict]:
     """Return undismissed nudges for a user, newest first."""
     with get_conn() as conn:
-        conn.execute(f"SET LOCAL app.current_user_id = '{user_id}'")
+        conn.execute("SET LOCAL app.current_user_id = %s", (str(user_id),))
         rows = conn.execute(
             """SELECT id, type, severity, title, body, data, created_at, read_at
                FROM nudges
@@ -1931,7 +1946,7 @@ def get_active_nudges(user_id: int) -> list[dict]:
 
 def dismiss_nudge(nudge_id: int, user_id: int) -> None:
     with get_conn() as conn:
-        conn.execute(f"SET LOCAL app.current_user_id = '{user_id}'")
+        conn.execute("SET LOCAL app.current_user_id = %s", (str(user_id),))
         conn.execute(
             """UPDATE nudges SET dismissed_at = NOW()
                WHERE id = %s AND user_id = %s""",
@@ -1941,7 +1956,7 @@ def dismiss_nudge(nudge_id: int, user_id: int) -> None:
 
 def mark_nudges_read(user_id: int) -> None:
     with get_conn() as conn:
-        conn.execute(f"SET LOCAL app.current_user_id = '{user_id}'")
+        conn.execute("SET LOCAL app.current_user_id = %s", (str(user_id),))
         conn.execute(
             """UPDATE nudges SET read_at = NOW()
                WHERE user_id = %s AND read_at IS NULL AND dismissed_at IS NULL""",
@@ -1952,16 +1967,16 @@ def mark_nudges_read(user_id: int) -> None:
 def clear_stale_nudges(user_id: int, days: int = 7) -> None:
     """Remove nudges older than `days` days so re-running analysis stays fresh."""
     with get_conn() as conn:
-        conn.execute(f"SET LOCAL app.current_user_id = '{user_id}'")
+        conn.execute("SET LOCAL app.current_user_id = %s", (str(user_id),))
         conn.execute(
-            "DELETE FROM nudges WHERE user_id = %s AND created_at < NOW() - INTERVAL '%s days'",
+            "DELETE FROM nudges WHERE user_id = %s AND created_at < NOW() - make_interval(days => %s)",
             (user_id, days),
         )
 
 
 def get_unread_nudge_count(user_id: int) -> int:
     with get_conn() as conn:
-        conn.execute(f"SET LOCAL app.current_user_id = '{user_id}'")
+        conn.execute("SET LOCAL app.current_user_id = %s", (str(user_id),))
         row = conn.execute(
             """SELECT COUNT(*) AS n FROM nudges
                WHERE user_id = %s AND read_at IS NULL AND dismissed_at IS NULL""",

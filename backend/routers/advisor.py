@@ -15,7 +15,7 @@ from backend.dependencies import get_current_user
 from backend.limiter import limiter
 from fastapi import Request
 from core.db import (
-    get_conn,
+    get_conn, get_user_conn,
     list_goals, get_goal, create_goal, update_goal, delete_goal,
     list_advice, store_advice, update_advice_reaction,
     retrieve_relevant_memories, store_memory,
@@ -305,7 +305,7 @@ def _extract_and_store_memories(user_id: int, user_message: str, advisor_respons
 
 def _fetch_budgets_with_spend(user_id: int, df: pd.DataFrame) -> list[dict]:
     """Return budget rows with current-month spend overlaid."""
-    with get_conn() as conn:
+    with get_user_conn(user_id) as conn:
         rows = conn.execute(
             "SELECT category, amount, period FROM budgets WHERE user_id = %s ORDER BY category",
             (user_id,)
