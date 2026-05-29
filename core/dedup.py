@@ -21,11 +21,13 @@ P2P_PLATFORMS = ["venmo", "paypal", "zelle", "cashapp", "apple cash"]
 TRANSFER_KEYWORDS = [
     "automatic payment", "credit card payment",
     "internet payment", "online payment", "ach transfer", "mobile payment",
+    "mobile pymt",
     "bank transfer", "wire transfer", "payment thank",
     "bill pay", "online transfer", "autopay",
     "withdrawal to", "transfer to", "transfer from",
     "deposit from", "fid bkg svc", "discover",
     "standard transfer", "instant transfer",
+    "paycheck percentage",
 ] + P2P_PLATFORMS
 
 TRANSFER_CATEGORIES = []
@@ -76,9 +78,18 @@ def flag_transfers(df: pd.DataFrame) -> pd.DataFrame:
         )
     )
 
-    # Zelle payments on bank accounts show as person names
+    # Zelle payments on bank accounts show as person names. Credit cards can't
+    # send Zelle, so gate on account subtype — otherwise 2-word merchant names
+    # like "Shake Shack" or "Rice Culture" on a credit card get false-flagged.
+    if "account_subtype" in df.columns:
+        on_bank_account = df["account_subtype"].fillna("").str.lower().isin(
+            ["checking", "savings", "money market"]
+        )
+    else:
+        on_bank_account = pd.Series(True, index=df.index)  # backwards compat
     zelle_payment = (
         df["institution"].str.lower().isin(ZELLE_INSTITUTIONS) &
+        on_bank_account &
         df["name"].apply(looks_like_person_name)
     )
 
@@ -118,6 +129,72 @@ def rule_based_transfer(row: pd.Series) -> tuple[bool, str] | None:
         return True, "keyword match"
 
     return None
+
+
+# ── Layer 2.5: Paired internal-transfer detection ──────────────────────────────
+
+def flag_paired_transfers(
+    df: pd.DataFrame,
+    amount_tolerance: float = 0.50,
+    date_window_days: int = 3,
+) -> pd.DataFrame:
+    """
+    Catch transfer pairs that the keyword pass misses: same-magnitude, opposite-sign
+    transactions within a few days, on DIFFERENT plaid accounts. Covers paycheck
+    auto-splits, credit-card payments, and inter-account moves regardless of merchant
+    name. The different-account constraint excludes refund/repurchase, which lands on
+    the same account.
+
+    Sibling pool includes already-flagged transfers — if the keyword pass caught one
+    leg (e.g. "CAPITAL ONE MOBILE PYMT"), the matching checking-side outflow
+    ("CAPITAL ONE") still gets paired and flagged.
+    """
+    df = df.copy()
+    if df.empty or "plaid_account_id" not in df.columns:
+        return df
+
+    # Exclude P2P platforms — leftover Venmo/PayPal/etc. rows that weren't already
+    # flagged are person-to-person payments, not user-owned account transfers, and
+    # would match unrelated same-amount purchases by coincidence. Substring match
+    # to catch institution names like "Venmo - Personal".
+    inst_lower = df["institution"].str.lower()
+    non_p2p = ~inst_lower.apply(lambda s: any(p in s for p in P2P_INSTITUTIONS))
+    pool = df[non_p2p & ~df["is_duplicate"]]
+    unflagged = pool[~pool["is_transfer"]]
+    if unflagged.empty:
+        return df
+
+    consumed: set = set()  # indices already part of a confirmed pair
+
+    for i, row in unflagged.sort_values("date").iterrows():
+        if i in consumed:
+            continue
+        date_min = row["date"] - timedelta(days=date_window_days)
+        date_max = row["date"] + timedelta(days=date_window_days)
+        acct = row.get("plaid_account_id", "") or ""
+        opposite = "credit" if row["type"] == "debit" else "debit"
+
+        siblings = pool[
+            (pool.index != i) &
+            (~pool.index.isin(consumed)) &
+            (pool["type"] == opposite) &
+            (pool["plaid_account_id"].fillna("") != acct) &
+            (pool["date"] >= date_min) &
+            (pool["date"] <= date_max) &
+            ((pool["amount"] + row["amount"]).abs() <= amount_tolerance)
+        ]
+        if siblings.empty:
+            continue
+
+        diffs = (siblings["date"] - row["date"]).abs()
+        j = diffs.sort_values().index[0]
+
+        df.at[i, "is_transfer"] = True
+        df.at[i, "dedup_reason"] = "paired transfer"
+        consumed.add(i)
+        consumed.add(j)
+
+    return df
 
 
 # ── Layer 3: Cross-institution duplicate detection ─────────────────────────────
@@ -294,6 +371,11 @@ def apply_dedup(df: pd.DataFrame) -> pd.DataFrame:
             df.at[i, "is_transfer"] = cached["is_transfer"]
             df.at[i, "is_duplicate"] = cached["is_duplicate"]
             df.at[i, "dedup_reason"] = cached["reason"]
+
+    # Layer 2.5: Catch internal transfer pairs the keyword pass missed (paycheck
+    # splits, credit-card payments, etc.). Not cached on individual fingerprint
+    # because the decision is pair-dependent, not row-intrinsic.
+    df = flag_paired_transfers(df)
 
     # Layer 3 + 4: Cross-institution duplicate detection
     pairs = find_potential_duplicates(df)

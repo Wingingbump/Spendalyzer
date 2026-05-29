@@ -176,16 +176,6 @@ def _run_migrations():
             )
         """)
 
-        # Sessions
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS sessions (
-                token         TEXT PRIMARY KEY,
-                user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                created_at    TIMESTAMPTZ DEFAULT NOW(),
-                last_activity TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-
         # Category map — per-user
         conn.execute("""
             CREATE TABLE IF NOT EXISTS category_map (
@@ -787,53 +777,6 @@ def list_users() -> list[dict]:
             "SELECT id, username, created_at FROM users ORDER BY created_at"
         ).fetchall()
     return [dict(r) for r in rows]
-
-
-# ── Sessions ─────────────────────────────────────────────────────────────────────
-
-def create_session(user_id: int) -> str:
-    token = secrets.token_urlsafe(32)
-    with get_conn() as conn:
-        conn.execute("SET LOCAL app.current_user_id = 'bypass'")
-        conn.execute(
-            "INSERT INTO sessions (token, user_id) VALUES (%s, %s)",
-            (token, user_id)
-        )
-    return token
-
-
-def get_session(token: str) -> dict | None:
-    with get_conn() as conn:
-        conn.execute("SET LOCAL app.current_user_id = 'bypass'")
-        row = conn.execute(
-            "SELECT token, user_id, last_activity FROM sessions WHERE token = %s",
-            (token,)
-        ).fetchone()
-    return dict(row) if row else None
-
-
-def touch_session(token: str):
-    with get_conn() as conn:
-        conn.execute("SET LOCAL app.current_user_id = 'bypass'")
-        conn.execute(
-            "UPDATE sessions SET last_activity = NOW() WHERE token = %s",
-            (token,)
-        )
-
-
-def delete_session(token: str):
-    with get_conn() as conn:
-        conn.execute("SET LOCAL app.current_user_id = 'bypass'")
-        conn.execute("DELETE FROM sessions WHERE token = %s", (token,))
-
-
-def cleanup_expired_sessions(minutes: int = 15):
-    with get_conn() as conn:
-        conn.execute("SET LOCAL app.current_user_id = 'bypass'")
-        conn.execute(
-            "DELETE FROM sessions WHERE last_activity < NOW() - (%s * INTERVAL '1 minute')",
-            (minutes,)
-        )
 
 
 # ── Refresh tokens (rotation) ─────────────────────────────────────────────────────
@@ -1905,7 +1848,6 @@ def update_advice_reaction(user_id: int, advice_id: int,
 
 
 # Prune stale tokens at import time
-cleanup_expired_sessions()
 cleanup_expired_refresh_tokens()
 
 
