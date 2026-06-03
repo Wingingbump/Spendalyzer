@@ -1,7 +1,8 @@
-import React, { useState } from 'react'
+import React, { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Search, Check, Plus, Trash2, X, Tag, Download, AlertTriangle } from 'lucide-react'
+import { Search, Check, Plus, Trash2, X, Tag, Download, AlertTriangle, Repeat, ChevronUp, ChevronDown, ChevronsUpDown, Pencil, SlidersHorizontal } from 'lucide-react'
 import { ledgerApi, transactionsApi, workspaceApi, merchantsApi, categoriesApi } from '../lib/api'
+import type { LedgerRow, RecurringRule } from '../lib/api'
 import { useFilters } from '../context/FilterContext'
 import { useWorkspace } from '../context/WorkspaceContext'
 import { usePanel } from '../context/PanelContext'
@@ -14,6 +15,7 @@ import { ActiveGroupBanner } from '../components/RightPanel'
 interface EditState {
   [id: number]: {
     category?: string
+    amount?: string
     notes?: string
   }
 }
@@ -21,6 +23,8 @@ interface EditState {
 interface SavedState {
   [id: number]: boolean
 }
+
+type SortKey = 'date' | 'name' | 'merchant' | 'category' | 'amount' | 'institution'
 
 
 const today = new Date().toISOString().split('T')[0]
@@ -33,16 +37,23 @@ interface AddForm {
   notes: string
 }
 
-export default function Ledger() {
+export default function Transactions() {
   const { range, institution, account } = useFilters()
   const { activeGroup } = useWorkspace()
-  const { panelOpen } = usePanel()
+  const { panelOpen, focusTab } = usePanel()
   const isMobile = useIsMobile()
   const rhsWidth = panelOpen ? PANEL_WIDTH : 0
   const [search, setSearch] = useState('')
-  const [types, setTypes] = useState<string[]>([])
+  // Default to spending + income; transfers + duplicates stay hidden.
+  const [types, setTypes] = useState<string[]>(['debit', 'credit'])
+  const [categories, setCategories] = useState<string[]>([])  // empty = all
+  const [catMenuOpen, setCatMenuOpen] = useState(false)
+  const [rulesOpen, setRulesOpen] = useState(false)
+  const [ruleDraft, setRuleDraft] = useState<{ key: string; value: string } | null>(null)
   const [showTransfers, setShowTransfers] = useState(false)
   const [showDuplicates, setShowDuplicates] = useState(false)
+  const [sortBy, setSortBy] = useState<SortKey>('date')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [editState, setEditState] = useState<EditState>({})
   const [saved, setSaved] = useState<SavedState>({})
   const [editingMerchant, setEditingMerchant] = useState<number | null>(null)
@@ -57,18 +68,47 @@ export default function Ledger() {
   const qc = useQueryClient()
 
   const { data: ledgerData, isLoading } = useQuery({
-    queryKey: ['ledger', range, institution, account, search, types, showTransfers, showDuplicates],
+    queryKey: ['ledger', range, institution, account, search, categories, types, showTransfers, showDuplicates],
     queryFn: () =>
       ledgerApi.list({
         range,
         institution,
         account,
         search,
+        category: categories.length > 0 ? categories.join(',') : undefined,
         types: types.length > 0 ? types.join(',') : undefined,
         show_transfers: showTransfers || undefined,
         show_duplicates: showDuplicates || undefined,
       }),
   })
+
+  // Manual recurring rules — keyed by merchant so we can offer "remove" on the
+  // toggle (only manual rules have a deletable id).
+  const { data: recurringRules = [] } = useQuery({
+    queryKey: ['recurring-rules'],
+    queryFn: () => workspaceApi.listRecurringRules(),
+    staleTime: 60_000,
+  })
+  const recurringByKey = useMemo(() => {
+    const m = new Map<string, RecurringRule>()
+    for (const r of recurringRules) m.set((r.merchant_key || '').toLowerCase().trim(), r)
+    return m
+  }, [recurringRules])
+
+  // Full recurring detection (auto-detected + manual) — drives the table badge so
+  // it matches exactly what the side panel's Recurring tab shows.
+  const { data: recurringDetected = [] } = useQuery({
+    queryKey: ['recurring'],
+    queryFn: () => workspaceApi.listRecurring(),
+    staleTime: 60_000,
+  })
+  const autoRecurringKeys = useMemo(() => {
+    const s = new Set<string>()
+    for (const r of recurringDetected) {
+      if (r.source === 'auto') s.add((r.name || '').toLowerCase().trim())
+    }
+    return s
+  }, [recurringDetected])
 
   const { data: groupTxData } = useQuery({
     queryKey: ['group-tx-ids', activeGroup?.id],
@@ -87,6 +127,54 @@ export default function Ledger() {
   const rows = ledgerData?.rows ?? []
   const summary = ledgerData?.summary
 
+  // Client-side sort on top of the backend's date-desc ordering.
+  const sortedRows = useMemo(() => {
+    const dir = sortDir === 'asc' ? 1 : -1
+    const val = (r: LedgerRow): string | number => {
+      switch (sortBy) {
+        case 'amount': return r.amount
+        case 'date': return r.date
+        case 'name': return (r.name || '').toLowerCase()
+        case 'merchant': return (r.merchant_normalized || '').toLowerCase()
+        case 'category': return (r.category || '').toLowerCase()
+        case 'institution': return (r.institution || '').toLowerCase()
+      }
+    }
+    return [...rows].sort((a, b) => {
+      const av = val(a), bv = val(b)
+      if (av < bv) return -dir
+      if (av > bv) return dir
+      return 0
+    })
+  }, [rows, sortBy, sortDir])
+
+  const toggleSort = (key: SortKey) => {
+    if (sortBy === key) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortBy(key)
+      // Numbers and dates read better newest/largest-first.
+      setSortDir(key === 'amount' || key === 'date' ? 'desc' : 'asc')
+    }
+  }
+
+  const sortHead = (label: string, key: SortKey, align: 'left' | 'right' = 'left') => {
+    const active = sortBy === key
+    const Icon = !active ? ChevronsUpDown : sortDir === 'asc' ? ChevronUp : ChevronDown
+    return (
+      <th
+        onClick={() => toggleSort(key)}
+        title="Click to sort"
+        style={{ cursor: 'pointer', userSelect: 'none', textAlign: align, whiteSpace: 'nowrap' }}
+      >
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, flexDirection: align === 'right' ? 'row-reverse' : 'row' }}>
+          {label}
+          <Icon size={12} style={{ opacity: active ? 1 : 0.35, color: active ? 'var(--color-accent)' : 'currentColor' }} />
+        </span>
+      </th>
+    )
+  }
+
   const tagMutation = useMutation({
     mutationFn: ({ txId, inGroup }: { txId: string; inGroup: boolean }) =>
       inGroup
@@ -100,7 +188,7 @@ export default function Ledger() {
 
 
   const patchMutation = useMutation({
-    mutationFn: ({ id, data }: { id: number; data: { category?: string; notes?: string } }) =>
+    mutationFn: ({ id, data }: { id: number; data: { category?: string; amount?: number; notes?: string } }) =>
       transactionsApi.patch(id, data),
     onSuccess: (_, { id }) => {
       setSaved((s) => ({ ...s, [id]: true }))
@@ -152,10 +240,77 @@ export default function Ledger() {
     },
   })
 
+  const markRecurringMutation = useMutation({
+    mutationFn: (transaction_id: string) => workspaceApi.markRecurringFromTransaction(transaction_id),
+    onSuccess: (data) => {
+      setToast({ message: `Marked "${data.merchant_key}" as recurring`, type: 'success' })
+      setTimeout(() => setToast(null), 2500)
+      qc.invalidateQueries({ queryKey: ['recurring'] })
+      qc.invalidateQueries({ queryKey: ['recurring-rules'] })
+      qc.invalidateQueries({ queryKey: ['tracker'] })
+      // Jump the side panel to Recurring so the result is immediately visible.
+      focusTab('recurring')
+    },
+    onError: () => {
+      setToast({ message: 'Could not mark as recurring', type: 'error' })
+      setTimeout(() => setToast(null), 2500)
+    },
+  })
+
+  const unmarkRecurringMutation = useMutation({
+    mutationFn: (ruleId: number) => workspaceApi.deleteRecurringRule(ruleId),
+    onSuccess: () => {
+      setToast({ message: 'Removed from recurring', type: 'success' })
+      setTimeout(() => setToast(null), 2500)
+      qc.invalidateQueries({ queryKey: ['recurring'] })
+      qc.invalidateQueries({ queryKey: ['recurring-rules'] })
+      qc.invalidateQueries({ queryKey: ['tracker'] })
+    },
+    onError: () => {
+      setToast({ message: 'Could not remove recurring', type: 'error' })
+      setTimeout(() => setToast(null), 2500)
+    },
+  })
+
   const { data: categoryOverrides = {} } = useQuery({
     queryKey: ['merchant-category-overrides'],
     queryFn: () => merchantsApi.categoryOverrides(),
   })
+
+  // Permanent merchant rename rules (raw merchant name -> display name).
+  const { data: renameRules = {} } = useQuery({
+    queryKey: ['merchant-overrides'],
+    queryFn: () => merchantsApi.overrides(),
+  })
+
+  const deleteRenameRuleMutation = useMutation({
+    mutationFn: (rawName: string) => merchantsApi.deleteOverride(rawName),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['merchant-overrides'] })
+      qc.invalidateQueries({ queryKey: ['ledger'] })
+      qc.invalidateQueries({ queryKey: ['merchants'] })
+    },
+  })
+
+  const editRenameRuleMutation = useMutation({
+    mutationFn: ({ rawName, displayName }: { rawName: string; displayName: string }) =>
+      merchantsApi.saveOverride(rawName, displayName),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['merchant-overrides'] })
+      qc.invalidateQueries({ queryKey: ['ledger'] })
+      qc.invalidateQueries({ queryKey: ['merchants'] })
+    },
+  })
+
+  const deleteCategoryRuleMutation = useMutation({
+    mutationFn: (merchant: string) => merchantsApi.deleteCategoryOverride(merchant),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['merchant-category-overrides'] })
+      qc.invalidateQueries({ queryKey: ['ledger'] })
+    },
+  })
+
+  const ruleCount = Object.keys(renameRules).length + Object.keys(categoryOverrides).length
 
   const createMutation = useMutation({
     mutationFn: (data: { name: string; date: string; amount: number; category?: string; notes?: string }) =>
@@ -200,15 +355,26 @@ export default function Ledger() {
     setEditingMerchant(null)
   }
 
-  const handleBlur = (rowId: number, field: 'category' | 'notes', originalValue: string) => {
-    const edit = editState[rowId]
+  const handleBlur = (row: LedgerRow, field: 'category' | 'amount' | 'notes') => {
+    const edit = editState[row.id]
     if (!edit) return
     const value = edit[field]
-    if (value === undefined || value === originalValue) return
-    patchMutation.mutate({ id: rowId, data: { [field]: value } })
+    if (value === undefined) return
+
+    const patch: { category?: string; amount?: number; notes?: string } = {}
+    if (field === 'category' && value !== row.category) patch.category = value
+    if (field === 'amount') {
+      const numVal = parseFloat(value)
+      if (!isNaN(numVal) && numVal !== row.amount) patch.amount = numVal
+    }
+    if (field === 'notes' && value !== (row.notes ?? '')) patch.notes = value
+
+    if (Object.keys(patch).length > 0) {
+      patchMutation.mutate({ id: row.id, data: patch })
+    }
   }
 
-  const setEdit = (id: number, field: 'category' | 'notes', value: string) => {
+  const setEdit = (id: number, field: 'category' | 'amount' | 'notes', value: string) => {
     setEditState((s) => ({ ...s, [id]: { ...s[id], [field]: value } }))
   }
 
@@ -368,26 +534,17 @@ export default function Ledger() {
         </div>
       )}
 
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-text-primary)' }}>Ledger</h1>
-          <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginTop: 2 }}>
-            Full transaction history including transfers and duplicates
-          </p>
-        </div>
-        <button
-          onClick={() => setShowAdd(true)}
-          className="flex items-center gap-1.5"
-          style={{ padding: '6px 12px', fontSize: 13, background: 'var(--color-accent)', border: 'none', borderRadius: 6, cursor: 'pointer', color: '#fff', fontWeight: 500 }}
-        >
-          <Plus size={14} /> Add
-        </button>
+      <div>
+        <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-text-primary)' }}>Transactions</h1>
+        <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginTop: 2 }}>
+          Spending and income by default — use the filters to show transfers and duplicates
+        </p>
       </div>
 
       <ActiveGroupBanner />
 
       {/* Filters bar */}
-      <div className="flex items-center gap-4 flex-wrap">
+      <div className="flex items-center gap-3 flex-wrap">
         <div className="relative">
           <Search
             size={14}
@@ -395,19 +552,72 @@ export default function Ledger() {
           />
           <input
             type="search"
-            placeholder="Search ledger…"
+            placeholder="Search transactions…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             style={{ paddingLeft: 30, width: 220 }}
           />
         </div>
 
-        {/* Type filter */}
+        {/* Category filter — multi-select */}
+        <div style={{ position: 'relative' }}>
+          <button
+            onClick={() => setCatMenuOpen((o) => !o)}
+            className="flex items-center gap-1.5"
+            title="Filter by category"
+            style={{ fontSize: 12, padding: '6px 10px', borderRadius: 6, background: 'var(--color-surface)', border: `1px solid ${categories.length ? 'var(--color-accent)' : 'var(--color-border)'}`, color: 'var(--color-text-primary)', cursor: 'pointer' }}
+          >
+            {categories.length === 0
+              ? 'All categories'
+              : categories.length === 1
+                ? categories[0]
+                : `${categories.length} categories`}
+            <ChevronDown size={13} style={{ color: 'var(--color-text-muted)' }} />
+          </button>
+          {catMenuOpen && (
+            <>
+              <div onClick={() => setCatMenuOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 30 }} />
+              <div
+                style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 31, minWidth: 190, maxHeight: 300, overflowY: 'auto', background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 8, padding: 6, boxShadow: '0 8px 28px rgba(0,0,0,0.32)' }}
+              >
+                <button
+                  onClick={() => setCategories([])}
+                  className="flex items-center justify-between w-full"
+                  style={{ fontSize: 12, padding: '5px 8px', borderRadius: 5, background: 'none', border: 'none', color: categories.length ? 'var(--color-text-secondary)' : 'var(--color-accent)', cursor: 'pointer', fontWeight: 600 }}
+                >
+                  All categories
+                  {categories.length === 0 && <Check size={13} />}
+                </button>
+                <div style={{ height: 1, background: 'var(--color-border)', margin: '4px 0' }} />
+                {userCategories.map((c) => {
+                  const checked = categories.includes(c)
+                  return (
+                    <label
+                      key={c}
+                      className="flex items-center gap-2"
+                      style={{ padding: '5px 8px', borderRadius: 5, cursor: 'pointer', fontSize: 12, color: 'var(--color-text-primary)' }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => setCategories((prev) => (checked ? prev.filter((x) => x !== c) : [...prev, c]))}
+                      />
+                      <span style={{ width: 7, height: 7, borderRadius: '50%', background: getCategoryColor(c), flexShrink: 0 }} />
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c}</span>
+                    </label>
+                  )
+                })}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Type filter — spending (debit) vs income (credit) */}
         <div
           className="flex items-center gap-1 rounded-lg p-1"
           style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}
         >
-          {['debit', 'credit'].map((t) => (
+          {[['debit', 'Spending'], ['credit', 'Income']].map(([t, label]) => (
             <button
               key={t}
               onClick={() => toggleType(t)}
@@ -418,7 +628,7 @@ export default function Ledger() {
                 border: types.includes(t) ? '1px solid var(--color-border)' : '1px solid transparent',
               }}
             >
-              {t}
+              {label}
             </button>
           ))}
         </div>
@@ -429,7 +639,7 @@ export default function Ledger() {
             checked={showTransfers}
             onChange={(e) => setShowTransfers(e.target.checked)}
           />
-          <span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>Show transfers</span>
+          <span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>Transfers</span>
         </label>
 
         <label className="flex items-center gap-2 cursor-pointer">
@@ -438,17 +648,134 @@ export default function Ledger() {
             checked={showDuplicates}
             onChange={(e) => setShowDuplicates(e.target.checked)}
           />
-          <span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>Show duplicates</span>
+          <span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>Duplicates</span>
         </label>
 
-        <button
-          onClick={() => ledgerApi.exportCsv({ range, institution, account, search, types: types.length > 0 ? types.join(',') : undefined, show_transfers: showTransfers || undefined, show_duplicates: showDuplicates || undefined })}
-          className="flex items-center gap-1.5 ml-auto"
-          style={{ fontSize: 12, color: 'var(--color-text-muted)', padding: '4px 10px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-surface)' }}
-        >
-          <Download size={13} />
-          Export CSV
-        </button>
+        <div className="flex items-center gap-2 ml-auto">
+          {/* Rules — view / change / delete permanent merchant + category rules */}
+          <div style={{ position: 'relative' }}>
+            <button
+              onClick={() => setRulesOpen((o) => !o)}
+              className="flex items-center gap-1.5"
+              title="Your saved merchant & category rules"
+              style={{ fontSize: 12, color: 'var(--color-text-muted)', padding: '6px 10px', borderRadius: 6, border: `1px solid ${rulesOpen ? 'var(--color-accent)' : 'var(--color-border)'}`, background: 'var(--color-surface)', cursor: 'pointer' }}
+            >
+              <SlidersHorizontal size={13} />
+              Rules{ruleCount > 0 ? ` (${ruleCount})` : ''}
+            </button>
+            {rulesOpen && (
+              <>
+                <div onClick={() => { setRulesOpen(false); setRuleDraft(null) }} style={{ position: 'fixed', inset: 0, zIndex: 30 }} />
+                <div
+                  style={{ position: 'absolute', top: 'calc(100% + 4px)', right: 0, zIndex: 31, width: 340, maxHeight: 420, overflowY: 'auto', background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 8, boxShadow: '0 8px 28px rgba(0,0,0,0.32)' }}
+                >
+                  <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--color-border)' }}>
+                    <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>Your rules</p>
+                    <p style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 2 }}>
+                      Permanent renames and category rules. Delete to revert to the auto-detected value.
+                    </p>
+                  </div>
+
+                  {/* Renamed merchants */}
+                  <div style={{ padding: '8px 12px' }}>
+                    <p style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--color-text-muted)', marginBottom: 6 }}>
+                      Renamed merchants
+                    </p>
+                    {Object.keys(renameRules).length === 0 ? (
+                      <p style={{ fontSize: 12, color: 'var(--color-text-muted)', padding: '2px 0 6px' }}>No rename rules.</p>
+                    ) : (
+                      Object.entries(renameRules).map(([rawName, display]) => (
+                        <div key={rawName} className="flex items-center gap-2" style={{ padding: '4px 0' }}>
+                          <span title={rawName} style={{ fontSize: 11, color: 'var(--color-text-muted)', flexShrink: 0, maxWidth: 90, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {rawName}
+                          </span>
+                          <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>→</span>
+                          {ruleDraft?.key === rawName ? (
+                            <input
+                              autoFocus
+                              value={ruleDraft.value}
+                              onChange={(e) => setRuleDraft({ key: rawName, value: e.target.value })}
+                              onBlur={() => {
+                                const v = ruleDraft.value.trim()
+                                if (v && v !== display) editRenameRuleMutation.mutate({ rawName, displayName: v })
+                                setRuleDraft(null)
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                                if (e.key === 'Escape') setRuleDraft(null)
+                              }}
+                              style={{ fontSize: 12, flex: 1, minWidth: 0 }}
+                            />
+                          ) : (
+                            <span
+                              onClick={() => setRuleDraft({ key: rawName, value: display })}
+                              title="Click to change"
+                              style={{ fontSize: 12, color: 'var(--color-text-primary)', flex: 1, cursor: 'text', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                            >
+                              {display}
+                            </span>
+                          )}
+                          <button
+                            onClick={() => deleteRenameRuleMutation.mutate(rawName)}
+                            title="Delete rule (revert)"
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-muted)', padding: 2, display: 'flex', flexShrink: 0 }}
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  {/* Category rules */}
+                  <div style={{ padding: '8px 12px', borderTop: '1px solid var(--color-border)' }}>
+                    <p style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--color-text-muted)', marginBottom: 6 }}>
+                      Category rules
+                    </p>
+                    {Object.keys(categoryOverrides).length === 0 ? (
+                      <p style={{ fontSize: 12, color: 'var(--color-text-muted)', padding: '2px 0 6px' }}>No category rules.</p>
+                    ) : (
+                      Object.entries(categoryOverrides).map(([merchant, cat]) => (
+                        <div key={merchant} className="flex items-center gap-2" style={{ padding: '4px 0' }}>
+                          <span style={{ fontSize: 12, color: 'var(--color-text-primary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {merchant}
+                          </span>
+                          <span className="flex items-center gap-1" style={{ flexShrink: 0 }}>
+                            <span style={{ width: 7, height: 7, borderRadius: '50%', background: getCategoryColor(cat) }} />
+                            <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{cat}</span>
+                          </span>
+                          <button
+                            onClick={() => deleteCategoryRuleMutation.mutate(merchant)}
+                            title="Delete rule"
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-muted)', padding: 2, display: 'flex', flexShrink: 0 }}
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+          <button
+            onClick={() => ledgerApi.exportCsv({ range, institution, account, search, category: categories.length > 0 ? categories.join(',') : undefined, types: types.length > 0 ? types.join(',') : undefined, show_transfers: showTransfers || undefined, show_duplicates: showDuplicates || undefined })}
+            className="flex items-center gap-1.5"
+            title="Export current view to CSV"
+            style={{ fontSize: 12, color: 'var(--color-text-muted)', padding: '6px 10px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-surface)', cursor: 'pointer' }}
+          >
+            <Download size={13} />
+            Export
+          </button>
+          <button
+            onClick={() => setShowAdd(true)}
+            className="flex items-center gap-1.5"
+            style={{ padding: '6px 12px', fontSize: 13, background: 'var(--color-accent)', border: 'none', borderRadius: 6, cursor: 'pointer', color: '#fff', fontWeight: 500 }}
+          >
+            <Plus size={14} /> Add
+          </button>
+        </div>
       </div>
 
       <div
@@ -459,12 +786,12 @@ export default function Ledger() {
           <table>
             <thead>
               <tr>
-                <th>Date</th>
-                <th>Name</th>
-                <th>Merchant</th>
-                <th>Category</th>
-                <th style={{ textAlign: 'right' }}>Amount</th>
-                <th>Institution</th>
+                {sortHead('Date', 'date')}
+                {sortHead('Name', 'name')}
+                {sortHead('Merchant', 'merchant')}
+                {sortHead('Category', 'category')}
+                {sortHead('Amount', 'amount', 'right')}
+                {sortHead('Institution', 'institution')}
                 <th>Status</th>
                 <th>Notes</th>
                 <th style={{ width: 30 }}></th>
@@ -474,21 +801,29 @@ export default function Ledger() {
             </thead>
             <tbody>
               {isLoading ? (
-                <SkeletonRow cols={activeGroup ? 10 : 9} rows={12} />
-              ) : rows.length === 0 ? (
+                <SkeletonRow cols={activeGroup ? 11 : 10} rows={12} />
+              ) : sortedRows.length === 0 ? (
                 <tr>
-                  <td colSpan={9} style={{ textAlign: 'center', color: 'var(--color-text-muted)', padding: '32px 0' }}>
+                  <td colSpan={activeGroup ? 11 : 10} style={{ textAlign: 'center', color: 'var(--color-text-muted)', padding: '32px 0' }}>
                     No transactions found
                   </td>
                 </tr>
               ) : (
-                rows.map((row) => {
+                sortedRows.map((row) => {
+                  const isEditingAmount = editState[row.id]?.amount !== undefined
+                  const currentAmount = isEditingAmount
+                    ? editState[row.id].amount!
+                    : formatCurrency(row.amount)
                   const currentCategory = editState[row.id]?.category !== undefined
                     ? editState[row.id].category!
                     : row.category
                   const currentNotes = editState[row.id]?.notes !== undefined
                     ? editState[row.id].notes!
                     : (row.notes ?? '')
+
+                  const recurringKey = (row.merchant_normalized || row.name || '').toLowerCase().trim()
+                  const recurringRule = recurringByKey.get(recurringKey)
+                  const isRecurring = !!recurringRule || autoRecurringKeys.has(recurringKey)
 
                   const rowStyle: React.CSSProperties = {}
                   if (row.is_duplicate) rowStyle.opacity = 0.5
@@ -540,10 +875,12 @@ export default function Ledger() {
                               {row.merchant_normalized || '—'}
                             </span>
                             {categoryOverrides[row.merchant_normalized] && (
-                              <div
-                                title={`Category rule: ${categoryOverrides[row.merchant_normalized]}`}
-                                style={{ width: 6, height: 6, borderRadius: '50%', background: getCategoryColor(categoryOverrides[row.merchant_normalized]), flexShrink: 0 }}
-                              />
+                              <span
+                                title={`Auto-categorized as "${categoryOverrides[row.merchant_normalized]}" — rule applies to all transactions from this merchant`}
+                                style={{ display: 'flex', flexShrink: 0 }}
+                              >
+                                <Tag size={11} style={{ color: getCategoryColor(categoryOverrides[row.merchant_normalized]) }} />
+                              </span>
                             )}
                           </div>
                         )}
@@ -572,10 +909,36 @@ export default function Ledger() {
                           </select>
                         </div>
                       </td>
-                      <td style={{ textAlign: 'right', fontFamily: 'monospace', fontSize: 12 }}>
-                        <span style={{ color: row.amount < 0 ? 'var(--color-positive)' : 'var(--color-text-primary)' }}>
-                          {formatCurrency(row.amount)}
-                        </span>
+                      <td style={{ textAlign: 'right' }} className="editable-cell">
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={currentAmount}
+                          onFocus={() => {
+                            if (!isEditingAmount) setEdit(row.id, 'amount', row.amount.toString())
+                          }}
+                          onChange={(e) => setEdit(row.id, 'amount', e.target.value)}
+                          onBlur={() => {
+                            handleBlur(row, 'amount')
+                            // Revert to formatted display after blur
+                            setEditState((s) => {
+                              const next = { ...s }
+                              if (next[row.id]) {
+                                const { amount: _a, ...rest } = next[row.id]
+                                if (Object.keys(rest).length === 0) delete next[row.id]
+                                else next[row.id] = rest
+                              }
+                              return next
+                            })
+                          }}
+                          style={{
+                            fontFamily: 'monospace',
+                            fontSize: 12,
+                            textAlign: 'right',
+                            width: 90,
+                            color: row.amount < 0 ? 'var(--color-positive)' : 'var(--color-text-primary)',
+                          }}
+                        />
                       </td>
                       <td style={{ fontSize: 12, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }}>
                         {row.institution}
@@ -606,6 +969,34 @@ export default function Ledger() {
                               dup
                             </span>
                           )}
+                          {isRecurring && (
+                            <span
+                              className="flex items-center gap-1 px-1.5 py-0.5 rounded"
+                              title="Marked as recurring"
+                              style={{ background: 'rgba(200, 255, 0, 0.13)', color: 'var(--color-accent)', fontSize: 10 }}
+                            >
+                              <Repeat size={9} />
+                              recurring
+                            </span>
+                          )}
+                          {row.needs_review ? (
+                            <span
+                              className="flex items-center gap-1 px-1.5 py-0.5 rounded"
+                              title="Reimbursement — we couldn't tell what it was for. Set a category so it reduces the right spending."
+                              style={{ background: 'rgba(232, 193, 122, 0.18)', color: '#e8c17a', fontSize: 10 }}
+                            >
+                              <AlertTriangle size={9} />
+                              review
+                            </span>
+                          ) : row.is_reimbursement && (
+                            <span
+                              className="px-1.5 py-0.5 rounded"
+                              title="Money back — reduces this category's spending"
+                              style={{ background: 'rgba(90, 191, 138, 0.15)', color: 'var(--color-positive)', fontSize: 10 }}
+                            >
+                              reimbursed
+                            </span>
+                          )}
                         </div>
                       </td>
                       <td className="editable-cell">
@@ -614,24 +1005,50 @@ export default function Ledger() {
                           value={currentNotes}
                           placeholder="Add note…"
                           onChange={(e) => setEdit(row.id, 'notes', e.target.value)}
-                          onBlur={() => handleBlur(row.id, 'notes', row.notes ?? '')}
+                          onBlur={() => handleBlur(row, 'notes')}
                           style={{ fontSize: 12, minWidth: 110 }}
                         />
                       </td>
                       <td>
-                        {saved[row.id] && (
+                        {saved[row.id] ? (
                           <Check size={13} style={{ color: 'var(--color-positive)' }} />
-                        )}
+                        ) : row.has_user_override ? (
+                          <span title="You edited this transaction" style={{ display: 'flex', justifyContent: 'center' }}>
+                            <Pencil size={11} style={{ color: 'var(--color-accent)' }} />
+                          </span>
+                        ) : null}
                       </td>
                       <td>
-                        <button
-                          onClick={() => setConfirmDelete(String(row.id))}
-                          title="Delete transaction"
-                          className="delete-row-btn"
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-muted)', padding: 2, opacity: 0, transition: 'opacity 0.15s', display: 'flex', alignItems: 'center' }}
-                        >
-                          <Trash2 size={12} />
-                        </button>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <button
+                            onClick={() =>
+                              recurringRule
+                                ? unmarkRecurringMutation.mutate(recurringRule.id)
+                                : markRecurringMutation.mutate(String(row.id))
+                            }
+                            disabled={markRecurringMutation.isPending || unmarkRecurringMutation.isPending}
+                            title={
+                              recurringRule
+                                ? 'Recurring — click to remove'
+                                : isRecurring
+                                  ? 'Auto-detected as recurring — click to pin a rule'
+                                  : 'Mark as recurring'
+                            }
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: isRecurring ? 'var(--color-accent)' : 'var(--color-text-muted)', padding: 2, opacity: recurringRule ? 1 : isRecurring ? 0.7 : 0.4, transition: 'opacity 0.15s, color 0.15s', display: 'flex', alignItems: 'center' }}
+                            onMouseEnter={(e) => { if (!recurringRule) e.currentTarget.style.opacity = '1' }}
+                            onMouseLeave={(e) => { if (!recurringRule) e.currentTarget.style.opacity = isRecurring ? '0.7' : '0.4' }}
+                          >
+                            <Repeat size={12} />
+                          </button>
+                          <button
+                            onClick={() => setConfirmDelete(String(row.id))}
+                            title="Delete transaction"
+                            className="delete-row-btn"
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-muted)', padding: 2, opacity: 0, transition: 'opacity 0.15s', display: 'flex', alignItems: 'center' }}
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
                       </td>
                       {activeGroup && (() => {
                         const txId = String(row.id)
@@ -797,10 +1214,15 @@ export default function Ledger() {
           <span style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>
             {summary.transactions} transactions
           </span>
-          <span style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>
+          <span style={{ fontSize: 13, color: 'var(--color-text-secondary)' }} title="Spending, net of reimbursements">
             Spent <span style={{ fontFamily: 'monospace', fontSize: 15, fontWeight: 600, color: 'var(--color-negative)', marginLeft: 6 }}>{formatCurrency(summary.spent)}</span>
           </span>
-          <span style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>
+          {summary.reimbursements > 0 && (
+            <span style={{ fontSize: 13, color: 'var(--color-text-secondary)' }} title="Money paid back to you (Venmo, refunds) — already subtracted from Spent">
+              Reimbursed <span style={{ fontFamily: 'monospace', fontSize: 15, fontWeight: 600, color: 'var(--color-accent)', marginLeft: 6 }}>{formatCurrency(summary.reimbursements)}</span>
+            </span>
+          )}
+          <span style={{ fontSize: 13, color: 'var(--color-text-secondary)' }} title="True income only — excludes reimbursements">
             Income <span style={{ fontFamily: 'monospace', fontSize: 15, fontWeight: 600, color: 'var(--color-positive)', marginLeft: 6 }}>{formatCurrency(summary.income)}</span>
           </span>
           <span style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>

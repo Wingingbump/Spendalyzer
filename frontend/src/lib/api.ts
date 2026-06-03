@@ -49,6 +49,8 @@ export interface User {
 
 export interface InsightsSummary {
   total_spent: number
+  total_income: number
+  total_reimbursements: number
   total_credits: number
   transaction_count: number
   net_spend: number
@@ -56,6 +58,9 @@ export interface InsightsSummary {
   last_month: number
   delta: number
   delta_pct: number
+  last_30_days: number
+  last_30_days_delta: number
+  last_30_days_delta_pct: number
   biggest_purchase: { amount: number; name: string; date: string } | null
   most_visited_merchant: { merchant: string; count: number; total: number } | null
   biggest_spending_day: { date: string; total: number } | null
@@ -114,6 +119,7 @@ export interface LedgerSummary {
   transactions: number
   spent: number
   income: number
+  reimbursements: number
   net: number
   transfer_count: number
 }
@@ -128,9 +134,13 @@ export interface LedgerRow {
   institution: string
   pending: boolean
   notes: string
+  type?: string
   has_user_override: boolean
+  is_manual?: boolean
   is_transfer?: boolean
   is_duplicate?: boolean
+  is_reimbursement?: boolean
+  needs_review?: boolean
   is_potential_duplicate?: boolean
   potential_dup_of?: PotentialDupOf | null
 }

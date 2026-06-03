@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
   LayoutDashboard, List, Target, Bot, MoreHorizontal,
-  BookOpen, Store, Tag, LayoutGrid, Settings, X,
+  Store, Tag, LayoutGrid, Settings, X,
 } from 'lucide-react'
 
 const PRIMARY_NAV = [
@@ -13,7 +13,6 @@ const PRIMARY_NAV = [
 ]
 
 const MORE_NAV = [
-  { to: '/ledger',      label: 'Ledger',      icon: BookOpen },
   { to: '/merchants',   label: 'Merchants',   icon: Store },
   { to: '/categories',  label: 'Categories',  icon: Tag },
   { to: '/canvas',      label: 'Canvas',      icon: LayoutGrid },

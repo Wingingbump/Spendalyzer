@@ -1,8 +1,21 @@
 import { createContext, useContext } from 'react'
 
-interface PanelContextType {
-  panelOpen: boolean
+export interface TabFocusRequest {
+  tab: string
+  nonce: number
 }
 
-export const PanelContext = createContext<PanelContextType>({ panelOpen: true })
+interface PanelContextType {
+  panelOpen: boolean
+  // Open the side panel (if collapsed) and switch it to the given tab.
+  focusTab: (tab: string) => void
+  // Latest focus request; RightPanel watches this to switch tabs.
+  requestedTab: TabFocusRequest | null
+}
+
+export const PanelContext = createContext<PanelContextType>({
+  panelOpen: true,
+  focusTab: () => {},
+  requestedTab: null,
+})
 export const usePanel = () => useContext(PanelContext)

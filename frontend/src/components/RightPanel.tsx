@@ -9,6 +9,7 @@ import { workspaceApi, transactionsApi, insightsApi, advisorApi, ledgerApi } fro
 import type { CustomGroup, Goal, LedgerRow } from '../lib/api'
 import { useWorkspace } from '../context/WorkspaceContext'
 import { useFilters } from '../context/FilterContext'
+import { usePanel } from '../context/PanelContext'
 import { formatCurrency, formatDate, getCategoryColor } from '../lib/utils'
 
 export const PANEL_WIDTH = 300
@@ -23,7 +24,6 @@ const ALL_TABS: TabId[] = ['recent', 'insights', 'budgets', 'recurring', 'groups
 const ROUTE_DEFAULT_TAB: Record<string, TabId> = {
   '/overview':     'recent',
   '/transactions': 'insights',
-  '/ledger':       'recurring',
   '/categories':   'budgets',
   '/merchants':    'budgets',
   '/canvas':       'groups',
@@ -868,7 +868,7 @@ function GroupsTab() {
     <div className="space-y-2">
       {groups.length === 0 && !adding && (
         <p style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
-          No groups yet. Create one and tag transactions from the Ledger.
+          No groups yet. Create one and tag transactions from the Transactions page.
         </p>
       )}
 
@@ -1106,6 +1106,15 @@ export default function RightPanel({ isOpen, onToggle }: RightPanelProps) {
   useEffect(() => {
     setActiveTab(ROUTE_DEFAULT_TAB[location.pathname] ?? FALLBACK_DEFAULT_TAB)
   }, [location.pathname])
+
+  // Allow pages to programmatically focus a tab (e.g. marking a transaction
+  // recurring jumps the panel to the Recurring tab so the result is visible).
+  const { requestedTab } = usePanel()
+  useEffect(() => {
+    if (requestedTab && ALL_TABS.includes(requestedTab.tab as TabId)) {
+      setActiveTab(requestedTab.tab as TabId)
+    }
+  }, [requestedTab])
 
   return (
     <div style={{ position: 'fixed', right: 0, top: 0, height: '100%', zIndex: 40 }}>

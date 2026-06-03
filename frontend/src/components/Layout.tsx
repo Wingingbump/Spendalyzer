@@ -6,6 +6,7 @@ import BottomNav from './BottomNav'
 import MobileHeader from './MobileHeader'
 import { PANEL_WIDTH } from './RightPanel'
 import { PanelContext } from '../context/PanelContext'
+import type { TabFocusRequest } from '../context/PanelContext'
 import { useAuth } from '../context/AuthContext'
 import { useIdleTimeout } from '../hooks/useIdleTimeout'
 import { useIsMobile } from '../hooks/useIsMobile'
@@ -24,6 +25,7 @@ export default function Layout({ children }: LayoutProps) {
   const [panelOpen, setPanelOpen] = useState(() => {
     try { return localStorage.getItem('rhs-panel-open') !== 'false' } catch { return true }
   })
+  const [requestedTab, setRequestedTab] = useState<TabFocusRequest | null>(null)
   const effectivePanelOpen = !isMobile && panelOpen && !PANEL_HIDDEN_ROUTES.includes(location.pathname)
 
   const handleToggle = () => {
@@ -34,8 +36,17 @@ export default function Layout({ children }: LayoutProps) {
     })
   }
 
+  const focusTab = (tab: string) => {
+    // Nonce ensures repeated requests for the same tab still fire the effect.
+    setRequestedTab({ tab, nonce: Date.now() })
+    if (!panelOpen) {
+      setPanelOpen(true)
+      try { localStorage.setItem('rhs-panel-open', 'true') } catch {}
+    }
+  }
+
   return (
-    <PanelContext.Provider value={{ panelOpen: effectivePanelOpen }}>
+    <PanelContext.Provider value={{ panelOpen: effectivePanelOpen, focusTab, requestedTab }}>
     <div className="flex min-h-screen" style={{ background: 'var(--color-bg)' }}>
       {/* Blurred content layer — blur covers sidebar + main + right panel */}
       <div

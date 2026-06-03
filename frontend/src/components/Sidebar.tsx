@@ -5,7 +5,6 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   LayoutDashboard,
   List,
-  BookOpen,
   Store,
   Tag,
   Settings,
@@ -23,7 +22,6 @@ import { formatDate } from '../lib/utils'
 const NAV_ITEMS = [
   { to: '/overview', label: 'Overview', icon: LayoutDashboard },
   { to: '/transactions', label: 'Transactions', icon: List },
-  { to: '/ledger', label: 'Ledger', icon: BookOpen },
   { to: '/merchants', label: 'Merchants', icon: Store },
   { to: '/categories', label: 'Categories', icon: Tag },
   { to: '/canvas', label: 'Canvas', icon: LayoutGrid },

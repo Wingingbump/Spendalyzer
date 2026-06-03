@@ -70,7 +70,7 @@ const TOUR_SLIDES = [
     iconBg: 'rgba(90,191,138,0.12)',
     iconColor: 'var(--color-positive)',
     title: 'Transactions',
-    body: 'Every transaction in one place. Search, filter by category, and edit details. The Ledger tab gives you an income vs. expenses view.',
+    body: 'Every transaction in one place. Defaults to your spending — toggle filters to reveal income, transfers, and duplicates, with an income vs. expenses summary.',
     cta: null,
   },
   {
@@ -278,7 +278,11 @@ export default function Overview() {
   const chartColors = theme === 'dark' ? CHART_COLORS_DARK : CHART_COLORS_LIGHT
   const params = { range, institution, account }
   const INSIGHTS_STALE = 3 * 60_000
-  const [monthView, setMonthView] = useState<'this' | 'last'>('this')
+  // Early in the month, this-month spend is too sparse to be useful — default the
+  // headline card to a rolling 30-day window for the first 5 days, then to this month.
+  const earlyMonth = new Date().getDate() <= 5
+  const [monthView, setMonthView] = useState<'this' | 'last' | '30d'>(earlyMonth ? '30d' : 'this')
+  const [catView, setCatView] = useState<'all' | 'month'>('all')
 
   const { data: accounts = [], isLoading: loadingAccounts } = useQuery({
     queryKey: ['accounts'],
@@ -312,9 +316,17 @@ export default function Overview() {
     staleTime: INSIGHTS_STALE,
   })
 
+  // By-category breakdown has its own All-time / This-month toggle, independent
+  // of the global range filter.
   const { data: categories = [], isLoading: loadingCategories } = useQuery({
-    queryKey: ['categories', range, institution, account],
-    queryFn: () => insightsApi.categories(params),
+    queryKey: ['categories', catView, institution, account],
+    queryFn: () => {
+      const d = new Date()
+      const catRange = catView === 'all'
+        ? 'all'
+        : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+      return insightsApi.categories({ range: catRange, institution, account })
+    },
     staleTime: INSIGHTS_STALE,
   })
 
@@ -356,6 +368,19 @@ export default function Overview() {
     : null
   const burnIsUnder = burnVsLastPct !== null && burnVsLastPct <= 0
 
+  // ── Headline card (This month / Last month / Past 30 days) ──────────────────
+  const mv30Positive = (summary?.last_30_days_delta ?? 0) <= 0
+  const mvLabel = monthView === '30d' ? 'Past 30 Days' : monthView === 'this' ? 'This Month' : 'Last Month'
+  const mvValue = monthView === '30d' ? summary?.last_30_days : monthView === 'this' ? summary?.this_month : summary?.last_month
+  const mvSub = summary
+    ? monthView === 'this'
+      ? `${isPositiveDelta ? '↓' : '↑'} ${formatCurrency(Math.abs(delta))} vs last month (${Math.abs(deltaPct).toFixed(1)}%)`
+      : monthView === 'last'
+        ? 'Final total for last month'
+        : `${mv30Positive ? '↓' : '↑'} ${formatCurrency(Math.abs(summary.last_30_days_delta))} vs prior 30 days (${Math.abs(summary.last_30_days_delta_pct).toFixed(1)}%)`
+    : undefined
+  const mvSubPositive = monthView === 'this' ? isPositiveDelta : monthView === '30d' ? mv30Positive : undefined
+
   return (
     <div className="space-y-5 fade-in">
       {showBanner && <OnboardingTour onDismiss={dismissBanner} />}
@@ -371,24 +396,19 @@ export default function Overview() {
       {/* Metric Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <MetricCard
-          label={monthView === 'this' ? 'This Month' : 'Last Month'}
-          value={formatCurrency((monthView === 'this' ? summary?.this_month : summary?.last_month) ?? 0)}
-          sub={
-            summary
-              ? monthView === 'this'
-                ? `${isPositiveDelta ? '↓' : '↑'} ${formatCurrency(Math.abs(delta))} vs last month (${Math.abs(deltaPct).toFixed(1)}%)`
-                : 'Final total for last month'
-              : undefined
-          }
-          subPositive={monthView === 'this' ? isPositiveDelta : undefined}
+          label={mvLabel}
+          value={formatCurrency(mvValue ?? 0)}
+          sub={mvSub}
+          subPositive={mvSubPositive}
           isLoading={loadingSummary}
           hero
           tabs={[
+            { key: '30d', label: '30 Days' },
             { key: 'this', label: 'This Month' },
             { key: 'last', label: 'Last Month' },
           ]}
           activeTab={monthView}
-          onTabChange={(k) => setMonthView(k as 'this' | 'last')}
+          onTabChange={(k) => setMonthView(k as 'this' | 'last' | '30d')}
         />
         <MetricCard
           label={`On Pace For · ${daysRemaining}d left`}
@@ -471,9 +491,32 @@ export default function Overview() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Categories */}
         <Card>
-          <p className="mb-4" style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)' }}>
-            By Category
-          </p>
+          <div className="flex items-center justify-between mb-4">
+            <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)' }}>
+              By Category
+            </p>
+            <div
+              className="flex items-center gap-1 rounded-lg p-0.5"
+              style={{ background: 'var(--color-surface-raise)', border: '1px solid var(--color-border)' }}
+            >
+              {[['all', 'All time'], ['month', 'This month']].map(([k, label]) => (
+                <button
+                  key={k}
+                  onClick={() => setCatView(k as 'all' | 'month')}
+                  className="px-2 py-0.5 rounded-md transition-colors"
+                  style={{
+                    fontSize: 11, fontWeight: 500,
+                    background: catView === k ? 'var(--color-surface)' : 'transparent',
+                    color: catView === k ? 'var(--color-text-primary)' : 'var(--color-text-muted)',
+                    border: catView === k ? '1px solid var(--color-border)' : '1px solid transparent',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
           {loadingCategories ? (
             <div className="flex items-center justify-center" style={{ height: 200 }}>
               <Spinner />
