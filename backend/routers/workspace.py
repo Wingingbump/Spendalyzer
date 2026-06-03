@@ -125,10 +125,12 @@ def _infer_frequency_loose(diffs: list[int]) -> str:
 
 
 def _detect_recurring(df: pd.DataFrame, user_rules: list[dict] | None = None) -> list:
+    # Both spending (debit) and income (credit) can recur — e.g. subscriptions
+    # and paychecks. Transfers and duplicates are excluded. Sign is preserved so
+    # downstream UI can tell income from spending.
     clean = df[
         (~df["is_transfer"].fillna(False)) &
-        (~df["is_duplicate"].fillna(False)) &
-        (df["type"] == "debit")
+        (~df["is_duplicate"].fillna(False))
     ].copy()
 
     if clean.empty:
@@ -161,9 +163,11 @@ def _detect_recurring(df: pd.DataFrame, user_rules: list[dict] | None = None) ->
         # 5% on a $30 median still rejects them.
         sorted_amt = sorted(amounts)
         median_amt = sorted_amt[len(sorted_amt) // 2]
-        if median_amt <= 0:
+        if median_amt == 0:
             continue
-        amount_tolerance = max(1.00, median_amt * 0.05)
+        # abs() so the tolerance works for income (negative) too. A mixed-sign
+        # group (e.g. a purchase and its refund) has a wide spread and is rejected.
+        amount_tolerance = max(1.00, abs(median_amt) * 0.05)
         if max(amounts) - min(amounts) > amount_tolerance:
             continue
 

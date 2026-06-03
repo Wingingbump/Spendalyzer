@@ -45,16 +45,31 @@ def summary(
     account: str = Query("all"),
     current_user: dict = Depends(get_current_user),
 ):
-    df = ins.load_data(current_user["id"])
-    df = apply_filters(df, range, institution, account)
+    base = ins.load_data(current_user["id"])
+    df = apply_filters(base, range, institution, account)
 
     mom = ins.this_month_vs_last(df)
     bp = ins.biggest_purchase(df)
     mvm = ins.most_visited_merchant(df)
     bsd = ins.biggest_spending_day(df)
 
+    # Rolling 30-day windows, independent of the global range filter — used early
+    # in the month when this-month data is too thin to be useful.
+    acct_scoped = apply_filters(base, "all", institution, account)
+    last_30 = ins.total_spent(ins.filter_by_range(acct_scoped, 30))
+    prev_30 = ins.total_spent(
+        ins.filter_by_range(acct_scoped, 60)[
+            ins.filter_by_range(acct_scoped, 60)["date"]
+            < (pd.Timestamp.today().normalize() - pd.Timedelta(days=30))
+        ]
+    )
+    delta_30 = round(last_30 - prev_30, 2)
+    delta_30_pct = round((delta_30 / prev_30 * 100), 1) if prev_30 > 0 else 0.0
+
     return {
         "total_spent": _safe(ins.total_spent(df)),
+        "total_income": _safe(ins.total_income(df)),
+        "total_reimbursements": _safe(ins.total_reimbursements(df)),
         "total_credits": _safe(ins.total_credits(df)),
         "transaction_count": _safe(ins.transaction_count(df)),
         "net_spend": _safe(ins.net_spend(df)),
@@ -62,6 +77,9 @@ def summary(
         "last_month": _safe(mom.get("last_month")),
         "delta": _safe(mom.get("delta")),
         "delta_pct": _safe(mom.get("delta_pct")),
+        "last_30_days": _safe(last_30),
+        "last_30_days_delta": _safe(delta_30),
+        "last_30_days_delta_pct": _safe(delta_30_pct),
         "biggest_purchase": bp,
         "most_visited_merchant": mvm,
         "biggest_spending_day": bsd,

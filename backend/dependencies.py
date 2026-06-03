@@ -84,9 +84,12 @@ def apply_filters(
     if account and account.lower() != "all":
         df = ins.filter_by_account(df, account)
 
-    # Category filter — case-insensitive exact match against the canonical category
+    # Category filter — case-insensitive exact match against the canonical
+    # category. Accepts a single category or a comma-separated list (multi-select).
     if category and category.lower() != "all" and "category" in df.columns:
-        df = df[df["category"].fillna("").str.lower() == category.lower()].copy()
+        wanted = {c.strip().lower() for c in category.split(",") if c.strip()}
+        if wanted:
+            df = df[df["category"].fillna("").str.lower().isin(wanted)].copy()
 
     # Merchant filter — substring match on merchant_normalized or raw name
     if merchant_query and "merchant_normalized" in df.columns:

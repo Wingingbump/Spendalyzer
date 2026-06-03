@@ -75,6 +75,9 @@ def _build_df(user_id: int) -> pd.DataFrame:
             "potential_dup_of": pd.Series(dtype=str),
             "merchant_normalized": pd.Series(dtype=str),
             "dedup_reason": pd.Series(dtype=str),
+            "has_user_override": pd.Series(dtype=bool),
+            "is_reimbursement": pd.Series(dtype=bool),
+            "needs_review": pd.Series(dtype=bool),
         })
         return df
     df = pd.DataFrame(rows)
@@ -99,12 +102,20 @@ def _build_df(user_id: int) -> pd.DataFrame:
     # Restore user override categories — user edits always win
     mask = df["has_user_override"]
     df.loc[mask, "category"] = df.loc[mask, "override_category"]
-    df = df.drop(columns=["has_user_override", "override_category"])
+    df = df.drop(columns=["override_category"])
 
     df = apply_dedup(df)
 
     dismissed = get_dismissed_duplicate_pairs(user_id)
     df = flag_potential_duplicates(df, dismissed)
+
+    # Classify reimbursements (P2P money-back + merchant refunds) vs income, then
+    # categorize P2P reimbursements from their memo so they net against the right
+    # category. Unresolved ones become Uncategorized + needs_review.
+    # Keep has_user_override available so a user-set category is never overwritten.
+    from core.reimbursements import flag_reimbursements, categorize_reimbursements
+    df = flag_reimbursements(df)
+    df = categorize_reimbursements(df, user_id)
 
     # Apply per-user merchant display name overrides (keyed by AI-normalized name)
     overrides = get_merchant_overrides(user_id)
@@ -143,32 +154,82 @@ def filter_by_account(df: pd.DataFrame, plaid_account_id: str) -> pd.DataFrame:
 
 # ── Base spending/credits ──────────────────────────────────────────────────────
 
+def _reimbursement_mask(df: pd.DataFrame) -> pd.Series:
+    if "is_reimbursement" in df.columns:
+        return df["is_reimbursement"].fillna(False)
+    return pd.Series(False, index=df.index)
+
+
 def get_spending(df: pd.DataFrame) -> pd.DataFrame:
-    """Clean debits — transfers and duplicates excluded."""
-    return get_clean_spending(df)
+    """Clean debits PLUS reimbursements. Reimbursements are money-back (negative
+    amounts) that net against their category. Transfers, duplicates, and true
+    income are excluded."""
+    if df.empty:
+        return df.copy()
+    reimb = _reimbursement_mask(df)
+    mask = (
+        (~df["is_transfer"].fillna(False))
+        & (~df["is_duplicate"].fillna(False))
+        & ((df["type"] == "debit") | reimb)
+    )
+    return df[mask].copy()
 
 
 def get_credits(df: pd.DataFrame) -> pd.DataFrame:
-    """Clean credits — transfers and duplicates excluded."""
+    """All clean credits — transfers and duplicates excluded (income + reimbursements)."""
     return df[
         (df["type"] == "credit") &
-        (~df["is_transfer"]) &
-        (~df["is_duplicate"])
+        (~df["is_transfer"].fillna(False)) &
+        (~df["is_duplicate"].fillna(False))
     ].copy()
+
+
+def get_income(df: pd.DataFrame) -> pd.DataFrame:
+    """True income only — clean credits that are NOT reimbursements (paycheck,
+    interest, tax refunds). Kept separate so it never dilutes spending."""
+    if df.empty:
+        return df.copy()
+    reimb = _reimbursement_mask(df)
+    mask = (
+        (df["type"] == "credit")
+        & (~df["is_transfer"].fillna(False))
+        & (~df["is_duplicate"].fillna(False))
+        & (~reimb)
+    )
+    return df[mask].copy()
+
+
+def get_reimbursements(df: pd.DataFrame) -> pd.DataFrame:
+    """Clean reimbursements only (money back for a spend)."""
+    if df.empty:
+        return df.copy()
+    return df[_reimbursement_mask(df)].copy()
 
 
 # ── Totals ─────────────────────────────────────────────────────────────────────
 
 def total_spent(df: pd.DataFrame) -> float:
+    """Net spend: debits minus reimbursements."""
     return round(get_spending(df)["amount"].sum(), 2)
 
 
+def total_income(df: pd.DataFrame) -> float:
+    """True income only (excludes reimbursements)."""
+    return round(get_income(df)["amount"].abs().sum(), 2)
+
+
+def total_reimbursements(df: pd.DataFrame) -> float:
+    return round(get_reimbursements(df)["amount"].abs().sum(), 2)
+
+
 def total_credits(df: pd.DataFrame) -> float:
+    """All clean credits (income + reimbursements). Retained for compatibility."""
     return round(get_credits(df)["amount"].abs().sum(), 2)
 
 
 def net_spend(df: pd.DataFrame) -> float:
-    return round(total_spent(df) - total_credits(df), 2)
+    """Net spend after income — positive means spent more than earned."""
+    return round(total_spent(df) - total_income(df), 2)
 
 
 def transaction_count(df: pd.DataFrame) -> int:

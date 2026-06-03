@@ -219,6 +219,27 @@ def _run_migrations():
             )
         """)
 
+        # Shared merchant dictionary — learned brand-per-bucket, global across
+        # users. Populated by clustering + AI; lets a brand resolved once snap a
+        # new user's lone variant into line. Holds no user-specific data.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS merchant_dictionary (
+                bucket     TEXT PRIMARY KEY,
+                canonical  TEXT NOT NULL,
+                members    INTEGER DEFAULT 1,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+
+        # Memo -> category cache for P2P reimbursement notes (e.g. "Freddys burger"
+        # -> "Food & Drink"). Global; only stores the resolved category label.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS memo_category_cache (
+                memo     TEXT PRIMARY KEY,
+                category TEXT NOT NULL
+            )
+        """)
+
         # Merchant overrides — per-user display name corrections
         conn.execute("""
             CREATE TABLE IF NOT EXISTS merchant_overrides (
@@ -1264,6 +1285,60 @@ def save_normalization_entry(raw_name: str, clean_name: str):
             VALUES (%s, %s)
             ON CONFLICT (raw_name) DO UPDATE SET clean_name = EXCLUDED.clean_name
         """, (raw_name, clean_name))
+
+
+# ── Shared merchant dictionary (global brand learning) ───────────────────────────
+
+def load_merchant_dictionary() -> dict:
+    """bucket -> canonical, shared across all users."""
+    with get_conn() as conn:
+        conn.execute("SET LOCAL app.current_user_id = 'bypass'")
+        try:
+            rows = conn.execute(
+                "SELECT bucket, canonical FROM merchant_dictionary"
+            ).fetchall()
+            return {r["bucket"]: r["canonical"] for r in rows}
+        except Exception:
+            return {}
+
+
+def upsert_merchant_dictionary(entries: dict[str, str]):
+    """entries: bucket -> canonical. Bumps members on conflict."""
+    if not entries:
+        return
+    with get_conn() as conn:
+        conn.execute("SET LOCAL app.current_user_id = 'bypass'")
+        for bucket, canonical in entries.items():
+            conn.execute("""
+                INSERT INTO merchant_dictionary (bucket, canonical, members)
+                VALUES (%s, %s, 1)
+                ON CONFLICT (bucket) DO UPDATE SET
+                    canonical  = EXCLUDED.canonical,
+                    members    = merchant_dictionary.members + 1,
+                    updated_at = NOW()
+            """, (bucket, canonical))
+
+
+# ── Memo -> category cache (reimbursement notes) ─────────────────────────────────
+
+def load_memo_category_cache() -> dict:
+    with get_conn() as conn:
+        conn.execute("SET LOCAL app.current_user_id = 'bypass'")
+        try:
+            rows = conn.execute("SELECT memo, category FROM memo_category_cache").fetchall()
+            return {r["memo"]: r["category"] for r in rows}
+        except Exception:
+            return {}
+
+
+def save_memo_category(memo: str, category: str):
+    with get_conn() as conn:
+        conn.execute("SET LOCAL app.current_user_id = 'bypass'")
+        conn.execute("""
+            INSERT INTO memo_category_cache (memo, category)
+            VALUES (%s, %s)
+            ON CONFLICT (memo) DO UPDATE SET category = EXCLUDED.category
+        """, (memo, category))
 
 
 # ── Merchant overrides ───────────────────────────────────────────────────────────

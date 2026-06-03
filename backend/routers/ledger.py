@@ -27,17 +27,21 @@ def ledger(
     institution: str = Query("all"),
     account: str = Query("all"),
     search: Optional[str] = Query(None),
+    category: str = Query("all"),
+    merchant_query: str = Query(""),
     types: Optional[str] = Query(None),
     show_transfers: bool = Query(False),
     show_duplicates: bool = Query(False),
     current_user: dict = Depends(get_current_user),
 ):
     df = ins.load_data(current_user["id"])
-    df = apply_filters(df, range, institution, account)
+    df = apply_filters(df, range, institution, account, category, merchant_query)
 
     cols = [c for c in ["id", "date", "name", "merchant_normalized", "category",
                          "amount", "institution", "pending", "type",
                          "is_transfer", "is_duplicate", "notes",
+                         "has_user_override", "is_manual",
+                         "is_reimbursement", "needs_review",
                          "is_potential_duplicate", "potential_dup_of"]
             if c in df.columns]
     result = df[cols].sort_values("date", ascending=False).reset_index(drop=True)
@@ -68,13 +72,10 @@ def ledger(
 
     transfer_count = int(df["is_transfer"].fillna(False).sum()) if "is_transfer" in df.columns else 0
     total_count = len(records)
-    clean = df[
-        (~df["is_transfer"].fillna(False)) & (~df["is_duplicate"].fillna(False))
-    ] if "is_transfer" in df.columns else df
-    debit_rows = clean[clean["type"] == "debit"] if "type" in clean.columns else pd.DataFrame()
-    credit_rows = clean[clean["type"] == "credit"] if "type" in clean.columns else pd.DataFrame()
-    spent = round(float(debit_rows["amount"].sum()), 2) if not debit_rows.empty else 0.0
-    income = round(float(credit_rows["amount"].abs().sum()), 2) if not credit_rows.empty else 0.0
+    # Net of reimbursements; income kept separate so it doesn't dilute spend.
+    spent = ins.total_spent(df)
+    income = ins.total_income(df)
+    reimbursements = ins.total_reimbursements(df)
     net = round(spent - income, 2)
 
     return {
@@ -82,6 +83,7 @@ def ledger(
         "summary": {
             "spent": spent,
             "income": income,
+            "reimbursements": reimbursements,
             "net": net,
             "transfer_count": transfer_count,
             "transactions": total_count,
@@ -95,13 +97,15 @@ def export_ledger(
     institution: str = Query("all"),
     account: str = Query("all"),
     search: Optional[str] = Query(None),
+    category: str = Query("all"),
+    merchant_query: str = Query(""),
     types: Optional[str] = Query(None),
     show_transfers: bool = Query(False),
     show_duplicates: bool = Query(False),
     current_user: dict = Depends(get_current_user),
 ):
     df = ins.load_data(current_user["id"])
-    df = apply_filters(df, range, institution, account)
+    df = apply_filters(df, range, institution, account, category, merchant_query)
 
     cols = [c for c in ["date", "name", "merchant_normalized", "category",
                          "amount", "institution", "type", "pending",
