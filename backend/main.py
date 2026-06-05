@@ -63,20 +63,55 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
+frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+# Max accepted request body. Above the 5 MB avatar cap, below anything abusive.
+MAX_BODY_BYTES = 6 * 1024 * 1024
+_STATE_CHANGING = {"POST", "PUT", "PATCH", "DELETE"}
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
         response = await call_next(request)
+        # This is a JSON API — it serves no HTML/scripts, so lock everything down.
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+        response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=(), payment=()"
+        response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
         return response
 
 
+class RequestGuardMiddleware(BaseHTTPMiddleware):
+    """Reject oversized bodies and cross-origin state-changing requests.
+
+    The Origin check is defense-in-depth on top of SameSite=Lax cookies: a
+    browser always sends Origin on cross-site state-changing requests, so we can
+    reject anything not from our own front end. Requests with no Origin (curl,
+    server-to-server) are allowed since they aren't CSRF vectors.
+    """
+    async def dispatch(self, request: Request, call_next) -> Response:
+        cl = request.headers.get("content-length")
+        if cl is not None:
+            try:
+                if int(cl) > MAX_BODY_BYTES:
+                    return Response("Payload too large", status_code=413)
+            except ValueError:
+                return Response("Bad Content-Length", status_code=400)
+
+        if request.method in _STATE_CHANGING:
+            origin = request.headers.get("origin")
+            if origin is not None and origin != frontend_url:
+                return Response("Cross-origin request blocked", status_code=403)
+
+        return await call_next(request)
+
+
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestGuardMiddleware)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # CORS
-frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[frontend_url],

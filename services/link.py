@@ -22,7 +22,16 @@ PLAID_ENVS = {
 }
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-insecure-change-me")
+# Fail closed: this key signs the Plaid-link token that binds a link session to a
+# user_id. A predictable default would let an attacker forge it and attach a Plaid
+# account to another user.
+_flask_secret = os.environ.get("FLASK_SECRET_KEY")
+if not _flask_secret:
+    raise RuntimeError(
+        "FLASK_SECRET_KEY environment variable is not set. "
+        "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+    )
+app.secret_key = _flask_secret
 
 _LINK_TOKEN_MAX_AGE = 3600  # 1 hour
 

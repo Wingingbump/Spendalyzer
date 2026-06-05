@@ -112,7 +112,7 @@ def apply_category_historical(
     spending = ins.get_spending(df)
     matching = spending[spending["merchant_normalized"] == merchant]
     ids = matching["id"].tolist()
-    count = bulk_apply_category_override(ids, body.category.strip())
+    count = bulk_apply_category_override(current_user["id"], ids, body.category.strip())
     ins.invalidate_user_cache(current_user["id"])
     return {"count": count}
 

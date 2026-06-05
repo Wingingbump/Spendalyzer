@@ -104,6 +104,7 @@ def patch_transaction(
     if not transaction_belongs_to_user(transaction_id, current_user["id"]):
         raise HTTPException(status_code=404, detail="Transaction not found")
     save_override(
+        current_user["id"],
         transaction_id,
         category=body.category,
         amount=body.amount,

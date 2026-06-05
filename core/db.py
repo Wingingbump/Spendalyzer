@@ -158,11 +158,19 @@ def _run_migrations():
         conn.execute("""
             CREATE TABLE IF NOT EXISTS overrides (
                 transaction_id TEXT PRIMARY KEY,
+                user_id        INTEGER REFERENCES users(id) ON DELETE CASCADE,
                 category       TEXT,
                 amount         NUMERIC(12,2),
                 notes          TEXT,
                 updated_at     TIMESTAMPTZ DEFAULT NOW()
             )
+        """)
+        # Backfill user_id on pre-existing rows and tenant-scope the table.
+        conn.execute("ALTER TABLE overrides ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE")
+        conn.execute("""
+            UPDATE overrides o SET user_id = t.user_id
+            FROM transactions t
+            WHERE t.id = o.transaction_id AND o.user_id IS NULL
         """)
 
         # Dedup cache
@@ -594,32 +602,50 @@ def _run_migrations():
         )
 
         # ── Row-Level Security ───────────────────────────────────────────────────
-        # Even if application code forgets WHERE user_id = %s, the DB blocks it.
-        # FORCE is required — without it, the table owner (this app's DB role)
-        # silently bypasses the policy and RLS becomes a no-op.
-        for table in ("transactions", "connected_accounts",
-                      "budgets", "canvases", "custom_groups", "category_map",
-                      "user_goals", "financial_events", "user_profile",
-                      "financial_snapshots", "conversation_memory", "advice_history",
-                      "nudges"):
+        # RLS isolates tenants at the database layer so a forgotten WHERE clause
+        # can't leak across users. IMPORTANT: this only takes effect when the app
+        # connects as a NON-superuser role WITHOUT BYPASSRLS (see
+        # scripts/provision_app_role.sql). The default 'postgres' superuser
+        # bypasses all of this — these policies are then inert but harmless.
+        #
+        # Policies are written with CASE (not OR) so the 'bypass' sentinel never
+        # gets cast to integer. Each per-user write/read path that runs under
+        # `SET app.current_user_id = 'bypass'` is permitted; user-scoped contexts
+        # are filtered to their own rows.
+        _CUR = "current_setting('app.current_user_id', TRUE)"
+        _UID = f"NULLIF({_CUR}, '')::integer"
+
+        def _policy(table: str, expr: str):
             conn.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
             conn.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
-            conn.execute(f"""
-                DO $$ BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1 FROM pg_policies
-                        WHERE tablename = '{table}' AND policyname = 'user_isolation'
-                    ) THEN
-                        CREATE POLICY user_isolation ON {table}
-                        USING (
-                            user_id = NULLIF(
-                                current_setting('app.current_user_id', TRUE), ''
-                            )::integer
-                            OR current_setting('app.current_user_id', TRUE) = 'bypass'
-                        );
-                    END IF;
-                END $$
-            """)
+            conn.execute(f"DROP POLICY IF EXISTS user_isolation ON {table}")
+            conn.execute(f"CREATE POLICY user_isolation ON {table} USING ({expr}) WITH CHECK ({expr})")
+
+        # Tables with a direct user_id column.
+        for table in ("transactions", "connected_accounts", "budgets", "canvases",
+                      "custom_groups", "category_map", "user_goals", "financial_events",
+                      "user_profile", "financial_snapshots", "conversation_memory",
+                      "advice_history", "nudges", "merchant_overrides",
+                      "merchant_category_overrides", "user_categories",
+                      "user_recurring_rules", "dismissed_duplicates", "overrides",
+                      "refresh_tokens", "email_verification_tokens", "password_reset_tokens"):
+            _policy(table, f"CASE WHEN {_CUR} = 'bypass' THEN TRUE ELSE user_id = {_UID} END")
+
+        # Identity table — a user may see only their own row (keyed on id).
+        _policy("users", f"CASE WHEN {_CUR} = 'bypass' THEN TRUE ELSE id = {_UID} END")
+
+        # Child tables (no user_id) — isolate via the owning parent's user_id.
+        for table, parent, fk in (("plaid_accounts", "connected_accounts", "connected_account_id"),
+                                  ("plaid_item_health", "connected_accounts", "connected_account_id"),
+                                  ("group_transactions", "custom_groups", "group_id")):
+            _policy(table, f"CASE WHEN {_CUR} = 'bypass' THEN TRUE ELSE EXISTS "
+                           f"(SELECT 1 FROM {parent} p WHERE p.id = {table}.{fk} AND p.user_id = {_UID}) END")
+
+        # Global shared tables hold no per-user data — disable RLS so the app role
+        # can read/write them freely.
+        for table in ("credentials", "dedup_cache", "normalization_cache",
+                      "merchant_dictionary", "memo_category_cache"):
+            conn.execute(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY")
 
         # ── Legacy migration: promote sqlite admin user if present ───────────────
         n = conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
@@ -934,19 +960,19 @@ def upsert_transactions(transactions: list[dict]):
 
 # ── Overrides ────────────────────────────────────────────────────────────────────
 
-def save_override(transaction_id: str, category: str = None,
+def save_override(user_id: int, transaction_id: str, category: str = None,
                   amount: float = None, notes: str = None):
-    with get_conn() as conn:
-        conn.execute("SET LOCAL app.current_user_id = 'bypass'")
+    # Runs under the user's RLS context so the override is bound to them.
+    with get_user_conn(user_id) as conn:
         conn.execute("""
-            INSERT INTO overrides (transaction_id, category, amount, notes, updated_at)
-            VALUES (%s, %s, %s, %s, NOW())
+            INSERT INTO overrides (transaction_id, user_id, category, amount, notes, updated_at)
+            VALUES (%s, %s, %s, %s, %s, NOW())
             ON CONFLICT (transaction_id) DO UPDATE SET
                 category   = COALESCE(EXCLUDED.category,  overrides.category),
                 amount     = COALESCE(EXCLUDED.amount,    overrides.amount),
                 notes      = COALESCE(EXCLUDED.notes,     overrides.notes),
                 updated_at = NOW()
-        """, (transaction_id, category, amount, notes))
+        """, (transaction_id, user_id, category, amount, notes))
 
 
 def insert_manual_transaction(user_id: int, name: str, date: str, amount: float,
@@ -1486,19 +1512,18 @@ def delete_merchant_category_override(user_id: int, merchant_normalized: str):
         )
 
 
-def bulk_apply_category_override(transaction_ids: list, category: str) -> int:
+def bulk_apply_category_override(user_id: int, transaction_ids: list, category: str) -> int:
     """Insert per-transaction overrides for a list of IDs, setting their category."""
     if not transaction_ids:
         return 0
-    with get_conn() as conn:
-        conn.execute("SET LOCAL app.current_user_id = 'bypass'")
+    with get_user_conn(user_id) as conn:
         conn.executemany("""
-            INSERT INTO overrides (transaction_id, category, updated_at)
-            VALUES (%s, %s, NOW())
+            INSERT INTO overrides (transaction_id, user_id, category, updated_at)
+            VALUES (%s, %s, %s, NOW())
             ON CONFLICT (transaction_id) DO UPDATE SET
                 category   = EXCLUDED.category,
                 updated_at = NOW()
-        """, [(tid, category) for tid in transaction_ids])
+        """, [(tid, user_id, category) for tid in transaction_ids])
     return len(transaction_ids)
 
 
