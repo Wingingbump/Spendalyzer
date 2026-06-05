@@ -10,6 +10,7 @@ import { useFilters } from '../context/FilterContext'
 import { useTheme } from '../context/ThemeContext'
 import { formatCurrency, formatDate, CHART_COLORS_DARK, CHART_COLORS_LIGHT, getCategoryColor } from '../lib/utils'
 import Card from '../components/Card'
+import RangeSelect from '../components/RangeSelect'
 import Spinner from '../components/Spinner'
 import SkeletonRow from '../components/SkeletonRow'
 
@@ -88,12 +89,13 @@ interface ApplyDialog {
 
 export default function Merchants() {
   const qc = useQueryClient()
-  const { range, institution, account } = useFilters()
+  const { institution, account } = useFilters()
   const { theme } = useTheme()
   const isMobile = useIsMobile()
   const chartColors = theme === 'dark' ? CHART_COLORS_DARK : CHART_COLORS_LIGHT
   const [selectedMerchant, setSelectedMerchant] = useState<string>('')
   const [applyDialog, setApplyDialog] = useState<ApplyDialog | null>(null)
+  const [range, setRange] = useState('90d')
   const params = { range, institution, account }
 
   const { data: merchants = [], isLoading } = useQuery({
@@ -158,11 +160,14 @@ export default function Merchants() {
 
   return (
     <div className="space-y-5 fade-in">
-      <div>
-        <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-text-primary)' }}>Merchants</h1>
-        <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginTop: 2 }}>
-          Spending by merchant
-        </p>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-text-primary)' }}>Merchants</h1>
+          <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginTop: 2 }}>
+            Spending by merchant
+          </p>
+        </div>
+        <RangeSelect value={range} onChange={setRange} />
       </div>
 
       {/* Bar chart */}

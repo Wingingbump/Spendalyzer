@@ -8,6 +8,7 @@ import { useFilters } from '../context/FilterContext'
 import { useTheme } from '../context/ThemeContext'
 import { formatCurrency, formatDate, CHART_COLORS_DARK, CHART_COLORS_LIGHT } from '../lib/utils'
 import Card from '../components/Card'
+import RangeSelect from '../components/RangeSelect'
 import Spinner from '../components/Spinner'
 import SkeletonRow from '../components/SkeletonRow'
 
@@ -28,10 +29,11 @@ function CategoryTooltip({ active, payload }: { active?: boolean; payload?: Arra
 }
 
 export default function Categories() {
-  const { range, institution, account } = useFilters()
+  const { institution, account } = useFilters()
   const { theme } = useTheme()
   const chartColors = theme === 'dark' ? CHART_COLORS_DARK : CHART_COLORS_LIGHT
   const [selectedCategory, setSelectedCategory] = useState<string>('')
+  const [range, setRange] = useState('90d')
   const params = { range, institution, account }
 
   const { data: categories = [], isLoading } = useQuery({
@@ -49,11 +51,14 @@ export default function Categories() {
 
   return (
     <div className="space-y-5 fade-in">
-      <div>
-        <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-text-primary)' }}>Categories</h1>
-        <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginTop: 2 }}>
-          Spending breakdown by category
-        </p>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-text-primary)' }}>Categories</h1>
+          <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginTop: 2 }}>
+            Spending breakdown by category
+          </p>
+        </div>
+        <RangeSelect value={range} onChange={setRange} />
       </div>
 
       {/* Main two-column layout */}

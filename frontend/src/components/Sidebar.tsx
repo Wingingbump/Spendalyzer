@@ -16,7 +16,7 @@ import {
 } from 'lucide-react'
 import { insightsApi, syncApi } from '../lib/api'
 import { useAuth } from '../context/AuthContext'
-import { useFilters, RANGE_OPTIONS } from '../context/FilterContext'
+import { useFilters } from '../context/FilterContext'
 import { formatDate } from '../lib/utils'
 
 const NAV_ITEMS = [
@@ -33,7 +33,7 @@ const NAV_ITEMS = [
 export default function Sidebar() {
   const isMobile = useIsMobile()
   const { user, logout } = useAuth()
-  const { range, institution, account, setRange, setInstitution, setAccount } = useFilters()
+  const { institution, account, setInstitution, setAccount } = useFilters()
   const qc = useQueryClient()
   const [userMenuOpen, setUserMenuOpen] = useState(false)
 
@@ -59,10 +59,10 @@ export default function Sidebar() {
   })
 
   const { data: summary } = useQuery({
-    queryKey: ['sidebar-summary', range, institution, account],
+    queryKey: ['sidebar-summary', institution, account],
     queryFn: () =>
       insightsApi.summary({
-        range,
+        range: 'all',
         institution,
         account,
       }),
@@ -81,24 +81,6 @@ export default function Sidebar() {
   const filteredAccounts = institution === 'all'
     ? accounts
     : accounts.filter((a) => a.institution === institution)
-
-  const rangeOptions = [...RANGE_OPTIONS]
-
-  const isCustom = range.startsWith('custom:') || range === 'custom'
-  const today = new Date().toISOString().slice(0, 10)
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10)
-  const customParts = range.startsWith('custom:') ? range.split(':') : []
-  const customStart = customParts[1] ?? thirtyDaysAgo
-  const customEnd = customParts[2] ?? today
-
-  const handleRangeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const val = e.target.value
-    if (val === 'custom') {
-      setRange(`custom:${thirtyDaysAgo}:${today}`)
-    } else {
-      setRange(val)
-    }
-  }
 
   if (isMobile) return null
 
@@ -148,50 +130,6 @@ export default function Sidebar() {
 
       {/* Filters */}
       <div className="px-4 flex-shrink-0 space-y-3">
-        <div>
-          <label className="block mb-1" style={{ fontSize: 11, color: 'var(--color-text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-            Range
-          </label>
-          <select
-            value={isCustom ? 'custom' : range}
-            onChange={handleRangeChange}
-            className="w-full"
-            style={{ fontSize: 12 }}
-          >
-            {rangeOptions.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
-
-          {isCustom && (
-            <div className="mt-2 space-y-1.5">
-              <div>
-                <label style={{ fontSize: 10, color: 'var(--color-text-muted)', display: 'block', marginBottom: 3 }}>From</label>
-                <input
-                  type="date"
-                  value={customStart}
-                  max={customEnd}
-                  onChange={(e) => setRange(`custom:${e.target.value}:${customEnd}`)}
-                  className="w-full"
-                  style={{ fontSize: 11, padding: '4px 8px' }}
-                />
-              </div>
-              <div>
-                <label style={{ fontSize: 10, color: 'var(--color-text-muted)', display: 'block', marginBottom: 3 }}>To</label>
-                <input
-                  type="date"
-                  value={customEnd}
-                  min={customStart}
-                  max={today}
-                  onChange={(e) => setRange(`custom:${customStart}:${e.target.value}`)}
-                  className="w-full"
-                  style={{ fontSize: 11, padding: '4px 8px' }}
-                />
-              </div>
-            </div>
-          )}
-        </div>
-
         <div>
           <label className="block mb-1" style={{ fontSize: 11, color: 'var(--color-text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
             Institution

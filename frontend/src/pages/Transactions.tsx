@@ -10,6 +10,7 @@ import { PANEL_WIDTH } from '../components/RightPanel'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { formatCurrency, formatDate, getCategoryColor } from '../lib/utils'
 import SkeletonRow from '../components/SkeletonRow'
+import RangeSelect from '../components/RangeSelect'
 import { ActiveGroupBanner } from '../components/RightPanel'
 
 interface EditState {
@@ -38,7 +39,10 @@ interface AddForm {
 }
 
 export default function Transactions() {
-  const { range, institution, account } = useFilters()
+  const { institution, account } = useFilters()
+  // Range is contextual to this page; the table defaults to all time so it never
+  // silently hides transactions.
+  const [range, setRange] = useState('all')
   const { activeGroup } = useWorkspace()
   const { panelOpen, focusTab } = usePanel()
   const isMobile = useIsMobile()
@@ -558,6 +562,9 @@ export default function Transactions() {
             style={{ paddingLeft: 30, width: 220 }}
           />
         </div>
+
+        {/* Time range — contextual to this page (defaults to all time) */}
+        <RangeSelect value={range} onChange={setRange} />
 
         {/* Category filter — multi-select */}
         <div style={{ position: 'relative' }}>

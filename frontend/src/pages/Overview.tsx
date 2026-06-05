@@ -14,6 +14,7 @@ import { useAuth } from '../context/AuthContext'
 import { formatCurrency, formatMonth, CHART_COLORS_DARK, CHART_COLORS_LIGHT } from '../lib/utils'
 import Card from '../components/Card'
 import MetricCard from '../components/MetricCard'
+import RangeSelect from '../components/RangeSelect'
 import Spinner from '../components/Spinner'
 
 // Custom tooltip for bar chart
@@ -272,7 +273,9 @@ function DataHealthCard() {
 }
 
 export default function Overview() {
-  const { range, institution, account } = useFilters()
+  const { institution, account } = useFilters()
+  // Range is contextual to this page (drives the trend, day-of-week, and totals).
+  const [range, setRange] = useState('ytd')
   const { theme } = useTheme()
   const { user } = useAuth()
   const chartColors = theme === 'dark' ? CHART_COLORS_DARK : CHART_COLORS_LIGHT
@@ -384,11 +387,14 @@ export default function Overview() {
   return (
     <div className="space-y-5 fade-in">
       {showBanner && <OnboardingTour onDismiss={dismissBanner} />}
-      <div>
-        <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-text-primary)' }}>Overview</h1>
-        <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginTop: 2 }}>
-          Your spending summary
-        </p>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-text-primary)' }}>Overview</h1>
+          <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginTop: 2 }}>
+            Your spending summary
+          </p>
+        </div>
+        <RangeSelect value={range} onChange={setRange} />
       </div>
 
       <DataHealthCard />

@@ -20,7 +20,10 @@ interface FilterContextValue {
 }
 
 const FilterContext = createContext<FilterContextValue>({
-  range: 'ytd',
+  // Range is no longer a global UI control — each view owns its own range.
+  // This stays as an "all time" default for the few non-page consumers
+  // (Canvas widget fallback, the side panel's recent list).
+  range: 'all',
   institution: 'all',
   account: 'all',
   setRange: () => {},
@@ -29,7 +32,7 @@ const FilterContext = createContext<FilterContextValue>({
 })
 
 export function FilterProvider({ children }: { children: React.ReactNode }) {
-  const [range, setRange] = useState('ytd')
+  const [range, setRange] = useState('all')
   const [institution, setInstitution] = useState('all')
   const [account, setAccount] = useState('all')
 

@@ -1,12 +1,12 @@
 import { useState } from 'react'
 import { SlidersHorizontal, X } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
-import { useFilters, RANGE_OPTIONS } from '../context/FilterContext'
+import { useFilters } from '../context/FilterContext'
 import { insightsApi } from '../lib/api'
 
 export default function MobileHeader() {
   const [filtersOpen, setFiltersOpen] = useState(false)
-  const { range, institution, account, setRange, setInstitution, setAccount } = useFilters()
+  const { institution, account, setInstitution, setAccount } = useFilters()
 
   const { data: institutions = [] } = useQuery({
     queryKey: ['institutions'],
@@ -24,20 +24,6 @@ export default function MobileHeader() {
     ? accounts
     : accounts.filter((a) => a.institution === institution)
 
-  const isCustom = range.startsWith('custom:') || range === 'custom'
-  const today = new Date().toISOString().slice(0, 10)
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10)
-  const customParts = range.startsWith('custom:') ? range.split(':') : []
-  const customStart = customParts[1] ?? thirtyDaysAgo
-  const customEnd = customParts[2] ?? today
-
-  const handleRangeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const val = e.target.value
-    setRange(val === 'custom' ? `custom:${thirtyDaysAgo}:${today}` : val)
-  }
-
-  const rangeLabel = RANGE_OPTIONS.find((o) => o.value === range)?.label
-    ?? (isCustom ? 'Custom' : range)
   const hasActiveFilters = institution !== 'all' || account !== 'all'
 
   return (
@@ -69,7 +55,7 @@ export default function MobileHeader() {
           }}
         >
           <SlidersHorizontal size={13} />
-          {rangeLabel}
+          {hasActiveFilters ? 'Filters · on' : 'Filters'}
         </button>
       </header>
 
@@ -98,33 +84,6 @@ export default function MobileHeader() {
             </div>
 
             <div className="space-y-4">
-              <div>
-                <label style={{ fontSize: 11, color: 'var(--color-text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', display: 'block', marginBottom: 6 }}>
-                  Range
-                </label>
-                <select value={isCustom ? 'custom' : range} onChange={handleRangeChange} className="w-full" style={{ fontSize: 14 }}>
-                  {RANGE_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>{opt.label}</option>
-                  ))}
-                </select>
-                {isCustom && (
-                  <div className="mt-3 space-y-2">
-                    <div>
-                      <label style={{ fontSize: 11, color: 'var(--color-text-muted)', display: 'block', marginBottom: 4 }}>From</label>
-                      <input type="date" value={customStart} max={customEnd}
-                        onChange={(e) => setRange(`custom:${e.target.value}:${customEnd}`)}
-                        className="w-full" style={{ fontSize: 13 }} />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: 11, color: 'var(--color-text-muted)', display: 'block', marginBottom: 4 }}>To</label>
-                      <input type="date" value={customEnd} min={customStart} max={today}
-                        onChange={(e) => setRange(`custom:${customStart}:${e.target.value}`)}
-                        className="w-full" style={{ fontSize: 13 }} />
-                    </div>
-                  </div>
-                )}
-              </div>
-
               <div>
                 <label style={{ fontSize: 11, color: 'var(--color-text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', display: 'block', marginBottom: 6 }}>
                   Institution
