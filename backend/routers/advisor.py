@@ -318,13 +318,11 @@ def _fetch_budgets_with_spend(user_id: int, df: pd.DataFrame) -> list[dict]:
     if not df.empty and "is_transfer" in df.columns:
         today = date.today()
         month_start = pd.Timestamp(today.replace(day=1))
-        month_df = df[
-            (df["date"] >= month_start) &
-            (~df.get("is_transfer", pd.Series(False, index=df.index)).fillna(False)) &
-            (~df.get("is_duplicate", pd.Series(False, index=df.index)).fillna(False)) &
-            (df["type"] == "debit")
-        ]
-        if "category" in month_df.columns:
+        # Net reimbursements against their category (matches the Overview and the
+        # right-panel budget tab) instead of summing raw debits.
+        spending = get_spending(df)
+        month_df = spending[spending["date"] >= month_start]
+        if "category" in month_df.columns and not month_df.empty:
             cat_spend = month_df.groupby("category")["amount"].sum().to_dict()
 
     for b in budgets:

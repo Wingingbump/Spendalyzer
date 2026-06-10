@@ -51,13 +51,12 @@ def list_budgets(current_user: dict = Depends(get_current_user)):
     if not df.empty and "is_transfer" in df.columns:
         now = datetime.date.today()
         month_start = now.replace(day=1)
-        month_df = df[
-            (df["date"].dt.date >= month_start) &
-            (~df["is_transfer"].fillna(False)) &
-            (~df["is_duplicate"].fillna(False)) &
-            (df["type"] == "debit")
-        ]
-        if "category" in month_df.columns:
+        # Use the same netted spend the Overview shows: debits PLUS reimbursements
+        # (money-back credits net against their category), not raw debits. Otherwise
+        # a category with a reimbursement looks more spent here than in the Overview.
+        spending = ins.get_spending(df)
+        month_df = spending[spending["date"].dt.date >= month_start]
+        if "category" in month_df.columns and not month_df.empty:
             cat_spend = month_df.groupby("category")["amount"].sum().to_dict()
 
     for b in budgets:

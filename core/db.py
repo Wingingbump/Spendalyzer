@@ -641,11 +641,33 @@ def _run_migrations():
             _policy(table, f"CASE WHEN {_CUR} = 'bypass' THEN TRUE ELSE EXISTS "
                            f"(SELECT 1 FROM {parent} p WHERE p.id = {table}.{fk} AND p.user_id = {_UID}) END")
 
-        # Global shared tables hold no per-user data — disable RLS so the app role
-        # can read/write them freely.
+        # Global shared tables hold no per-user data, so there's nothing to scope
+        # by user_id. But they're still exposed over Supabase's PostgREST API, where
+        # the `anon`/`authenticated` roles hold full DML grants — leaving RLS off
+        # means anyone with the anon key can read/write them (credentials is a secret
+        # store). So: enable RLS, revoke the PostgREST roles' grants to close the REST
+        # hole, and add a permissive policy so the direct-Postgres app role keeps full
+        # access. The policy is scoped to `app_user` (not PUBLIC) on purpose: the owner
+        # (postgres) and service_role bypass RLS already, app_user is the only role that
+        # needs it, and a PUBLIC `USING (true)` write policy trips the 0024 linter. When
+        # app_user doesn't exist (non-Supabase / dev as the owner role) RLS is bypassed
+        # anyway, so fall back to a PUBLIC policy to keep any non-owner role working.
         for table in ("credentials", "dedup_cache", "normalization_cache",
                       "merchant_dictionary", "memo_category_cache"):
-            conn.execute(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY")
+            conn.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
+            conn.execute(f"DROP POLICY IF EXISTS shared_app ON {table}")
+            # The PostgREST/app_user roles only exist on Supabase; guard other envs.
+            conn.execute(
+                "DO $do$ BEGIN "
+                "IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_user') THEN "
+                f"  CREATE POLICY shared_app ON {table} TO app_user USING (TRUE) WITH CHECK (TRUE); "
+                "ELSE "
+                f"  CREATE POLICY shared_app ON {table} USING (TRUE) WITH CHECK (TRUE); "
+                "END IF; "
+                "IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN "
+                f"  REVOKE ALL ON {table} FROM anon, authenticated; "
+                "END IF; END $do$"
+            )
 
         # ── Legacy migration: promote sqlite admin user if present ───────────────
         n = conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
