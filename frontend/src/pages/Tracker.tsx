@@ -110,8 +110,8 @@ function GoalCard({ goal, onUpdateAmount }: {
           <div className="flex items-center gap-2 mb-0.5 flex-wrap">
             <span style={{
               fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 20,
-              background: 'rgba(26,86,219,0.12)', color: 'var(--color-accent-text)',
-              border: '1px solid rgba(26,86,219,0.25)',
+              background: 'var(--color-accent-soft)', color: 'var(--color-accent-text)',
+              border: '1px solid color-mix(in srgb, var(--color-accent) 25%, transparent)',
             }}>{goalTypeLabel(goal.type)}</span>
             {goal.status === 'completed' && (
               <span style={{ fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 20, background: 'rgba(34,197,94,0.12)', color: 'var(--color-positive)', border: '1px solid rgba(34,197,94,0.25)' }}>
@@ -208,7 +208,7 @@ function GoalCard({ goal, onUpdateAmount }: {
                 color: 'var(--color-text-primary)', minWidth: 0,
               }}
             />
-            <button onClick={handleSave} disabled={saving} style={{ display: 'flex', alignItems: 'center', padding: 5, borderRadius: 6, background: 'var(--color-accent)', border: 'none', color: '#fff', cursor: 'pointer' }}>
+            <button onClick={handleSave} disabled={saving} style={{ display: 'flex', alignItems: 'center', padding: 5, borderRadius: 6, background: 'var(--color-accent)', border: 'none', color: 'var(--color-accent-contrast)', cursor: 'pointer' }}>
               <Check size={12} />
             </button>
             <button onClick={() => setEditing(false)} style={{ display: 'flex', alignItems: 'center', padding: 5, borderRadius: 6, background: 'transparent', border: '1px solid var(--color-border)', color: 'var(--color-text-muted)', cursor: 'pointer' }}>
@@ -458,7 +458,7 @@ function HealthTab({ data }: { data: NonNullable<ReturnType<typeof useTrackerDat
                       <div className="flex items-center gap-2">
                         <p style={{ fontSize: 13, color: 'var(--color-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</p>
                         {r.source === 'manual' && (
-                          <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', padding: '1px 5px', borderRadius: 3, background: 'var(--color-accent)', color: '#fff' }}>
+                          <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', padding: '1px 5px', borderRadius: 3, background: 'var(--color-accent)', color: 'var(--color-accent-contrast)' }}>
                             Manual
                           </span>
                         )}
@@ -604,7 +604,7 @@ function RecurringRuleEditModal({ rule, onClose }: { rule: RecurringRule; onClos
           <button
             onClick={() => update.mutate()}
             disabled={update.isPending}
-            style={{ padding: '6px 14px', fontSize: 13, background: 'var(--color-accent)', border: 'none', borderRadius: 6, cursor: 'pointer', color: '#fff', opacity: update.isPending ? 0.6 : 1 }}
+            style={{ padding: '6px 14px', fontSize: 13, background: 'var(--color-accent)', border: 'none', borderRadius: 6, cursor: 'pointer', color: 'var(--color-accent-contrast)', opacity: update.isPending ? 0.6 : 1 }}
           >
             {update.isPending ? 'Saving…' : 'Save'}
           </button>
@@ -738,7 +738,7 @@ export default function Tracker() {
               fontSize: 12, fontWeight: 500, padding: '6px 14px', borderRadius: 9, cursor: 'pointer',
               border: 'none', transition: 'all 0.15s',
               background: tab === id ? 'var(--color-accent)' : 'transparent',
-              color: tab === id ? '#fff' : 'var(--color-text-muted)',
+              color: tab === id ? 'var(--color-accent-contrast)' : 'var(--color-text-muted)',
             }}
           >
             <Icon size={13} />

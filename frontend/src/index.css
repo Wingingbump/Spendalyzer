@@ -15,6 +15,8 @@
   --color-negative: #e86060;
   --color-accent: #1a56db;
   --color-accent-text: #b5c4ff;
+  --color-accent-contrast: #fff;
+  --color-accent-soft: color-mix(in srgb, var(--color-accent) 12%, transparent);
 }
 
 .light {
@@ -29,6 +31,7 @@
   --color-negative: #c93535;
   --color-accent: #1a56db;
   --color-accent-text: #1a56db;
+  --color-accent-contrast: #fff;
 }
 
 /* ── Dark palettes ──────────────────────────────────────────────────────── */
@@ -42,6 +45,7 @@
   --color-text-muted: #6070a0;
   --color-accent: #4d8be8;
   --color-accent-text: #a8c4f5;
+  --color-accent-contrast: #fff;
 }
 
 .dark.palette-forest {
@@ -54,6 +58,7 @@
   --color-accent: #3eb87f;
   --color-accent-text: #a3dcc0;
   --color-positive: #4dcf8a;
+  --color-accent-contrast: #fff;
 }
 
 .dark.palette-ember {
@@ -65,6 +70,7 @@
   --color-text-muted: #9a7060;
   --color-accent: #e07340;
   --color-accent-text: #f5b89a;
+  --color-accent-contrast: #fff;
 }
 
 /* ── Light palettes ─────────────────────────────────────────────────────── */
@@ -79,6 +85,7 @@
   --color-text-muted: #9a8070;
   --color-accent: #c25d1e;
   --color-accent-text: #c25d1e;
+  --color-accent-contrast: #fff;
 }
 
 .light.palette-sage {
@@ -92,6 +99,7 @@
   --color-accent: #2d7a4f;
   --color-accent-text: #2d7a4f;
   --color-positive: #2a8a50;
+  --color-accent-contrast: #fff;
 }
 
 .light.palette-lavender {
@@ -104,6 +112,7 @@
   --color-text-muted: #7e70a8;
   --color-accent: #6b4fd8;
   --color-accent-text: #6b4fd8;
+  --color-accent-contrast: #fff;
 }
 
 * {

@@ -14,13 +14,13 @@ const TYPE_META: Record<Nudge['type'], { icon: React.ElementType; label: string 
 }
 
 const SEVERITY_BG: Record<Nudge['severity'], string> = {
-  info:    'rgba(200,255,0,0.07)',
+  info:    'var(--color-accent-soft)',
   warning: 'rgba(224,115,64,0.10)',
   alert:   'rgba(239,68,68,0.10)',
 }
 
 const SEVERITY_BORDER: Record<Nudge['severity'], string> = {
-  info:    'rgba(200,255,0,0.20)',
+  info:    'color-mix(in srgb, var(--color-accent) 20%, transparent)',
   warning: 'rgba(224,115,64,0.30)',
   alert:   'rgba(239,68,68,0.30)',
 }

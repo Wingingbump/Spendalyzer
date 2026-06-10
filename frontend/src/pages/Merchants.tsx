@@ -87,7 +87,7 @@ interface ApplyDialog {
   category: string
 }
 
-export default function Merchants() {
+export default function Merchants({ embedded = false }: { embedded?: boolean }) {
   const qc = useQueryClient()
   const { institution, account } = useFilters()
   const { theme } = useTheme()
@@ -160,15 +160,22 @@ export default function Merchants() {
 
   return (
     <div className="space-y-5 fade-in">
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-text-primary)' }}>Merchants</h1>
-          <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginTop: 2 }}>
-            Spending by merchant
-          </p>
+      {!embedded && (
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-text-primary)' }}>Merchants</h1>
+            <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginTop: 2 }}>
+              Spending by merchant
+            </p>
+          </div>
+          <RangeSelect value={range} onChange={setRange} />
         </div>
-        <RangeSelect value={range} onChange={setRange} />
-      </div>
+      )}
+      {embedded && (
+        <div className="flex justify-end">
+          <RangeSelect value={range} onChange={setRange} />
+        </div>
+      )}
 
       {/* Bar chart */}
       <Card>
@@ -444,7 +451,7 @@ export default function Merchants() {
                 onClick={() => applyHistoricalMutation.mutate(applyDialog)}
                 style={{
                   fontSize: 13, padding: '6px 14px', borderRadius: 6,
-                  background: 'var(--color-accent)', color: '#000',
+                  background: 'var(--color-accent)', color: 'var(--color-accent-contrast)',
                   fontWeight: 600, cursor: 'pointer', border: 'none',
                   opacity: applyHistoricalMutation.isPending ? 0.6 : 1,
                 }}

@@ -63,7 +63,7 @@ export default function VerifyEmail() {
             <button
               onClick={() => navigate('/login')}
               className="w-full py-2.5 rounded-lg font-semibold"
-              style={{ background: 'var(--color-accent)', color: '#000', fontSize: 14 }}
+              style={{ background: 'var(--color-accent)', color: 'var(--color-accent-contrast)', fontSize: 14 }}
             >
               Back to sign in
             </button>

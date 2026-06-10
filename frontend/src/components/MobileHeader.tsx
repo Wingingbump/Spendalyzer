@@ -47,7 +47,7 @@ export default function MobileHeader() {
           onClick={() => setFiltersOpen(true)}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg"
           style={{
-            background: hasActiveFilters ? 'rgba(26, 86, 219, 0.1)' : 'var(--color-surface-raise)',
+            background: hasActiveFilters ? 'var(--color-accent-soft)' : 'var(--color-surface-raise)',
             border: `1px solid ${hasActiveFilters ? 'var(--color-accent)' : 'var(--color-border)'}`,
             color: hasActiveFilters ? 'var(--color-accent-text)' : 'var(--color-text-secondary)',
             fontSize: 12,
@@ -114,7 +114,7 @@ export default function MobileHeader() {
             <button
               onClick={() => setFiltersOpen(false)}
               className="w-full mt-6 py-3 rounded-xl font-semibold"
-              style={{ background: 'var(--color-accent)', color: '#fff', fontSize: 14 }}
+              style={{ background: 'var(--color-accent)', color: 'var(--color-accent-contrast)', fontSize: 14 }}
             >
               Done
             </button>

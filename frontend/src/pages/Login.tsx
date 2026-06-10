@@ -200,7 +200,7 @@ export default function Login() {
                       onClick={onResend}
                       disabled={resendLoading}
                       className="px-3 py-1.5 rounded-lg font-medium disabled:opacity-60"
-                      style={{ background: 'var(--color-accent)', color: '#000', fontSize: 12, whiteSpace: 'nowrap' }}
+                      style={{ background: 'var(--color-accent)', color: 'var(--color-accent-contrast)', fontSize: 12, whiteSpace: 'nowrap' }}
                     >
                       {resendLoading ? 'Sending…' : 'Resend'}
                     </button>
@@ -318,7 +318,7 @@ export default function Login() {
                   {successMsg}
                 </div>
                 <button onClick={closeForgot} className="w-full py-2 rounded-lg font-medium"
-                  style={{ background: 'var(--color-accent)', color: '#000', fontSize: 13 }}>
+                  style={{ background: 'var(--color-accent)', color: 'var(--color-accent-contrast)', fontSize: 13 }}>
                   Done
                 </button>
               </div>
@@ -342,7 +342,7 @@ function SubmitButton({ loading, label, loadingLabel, flex }: { loading: boolean
   return (
     <button type="submit" disabled={loading}
       className={`${flex ? 'flex-1' : 'w-full'} py-2.5 rounded-lg font-semibold transition-opacity disabled:opacity-60`}
-      style={{ background: 'var(--color-accent)', color: '#000', fontSize: 14, marginTop: flex ? 0 : 8 }}>
+      style={{ background: 'var(--color-accent)', color: 'var(--color-accent-contrast)', fontSize: 14, marginTop: flex ? 0 : 8 }}>
       {loading ? loadingLabel : label}
     </button>
   )

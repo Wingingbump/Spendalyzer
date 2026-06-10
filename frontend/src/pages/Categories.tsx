@@ -28,7 +28,7 @@ function CategoryTooltip({ active, payload }: { active?: boolean; payload?: Arra
   )
 }
 
-export default function Categories() {
+export default function Categories({ embedded = false }: { embedded?: boolean }) {
   const { institution, account } = useFilters()
   const { theme } = useTheme()
   const chartColors = theme === 'dark' ? CHART_COLORS_DARK : CHART_COLORS_LIGHT
@@ -51,15 +51,22 @@ export default function Categories() {
 
   return (
     <div className="space-y-5 fade-in">
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-text-primary)' }}>Categories</h1>
-          <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginTop: 2 }}>
-            Spending breakdown by category
-          </p>
+      {!embedded && (
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-text-primary)' }}>Categories</h1>
+            <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginTop: 2 }}>
+              Spending breakdown by category
+            </p>
+          </div>
+          <RangeSelect value={range} onChange={setRange} />
         </div>
-        <RangeSelect value={range} onChange={setRange} />
-      </div>
+      )}
+      {embedded && (
+        <div className="flex justify-end">
+          <RangeSelect value={range} onChange={setRange} />
+        </div>
+      )}
 
       {/* Main two-column layout */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">

@@ -283,7 +283,7 @@ function ProfilePanel({
             style={{
               display: 'flex', alignItems: 'center', gap: 4,
               fontSize: 12, padding: '5px 12px', borderRadius: 8,
-              background: 'var(--color-accent)', color: '#fff',
+              background: 'var(--color-accent)', color: 'var(--color-accent-contrast)',
               border: 'none', cursor: 'pointer', fontWeight: 500,
             }}
           >
@@ -607,7 +607,7 @@ export default function Advisor() {
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.background = 'var(--color-accent)'
-                e.currentTarget.style.color = '#fff'
+                e.currentTarget.style.color = 'var(--color-accent-contrast)'
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.background = 'var(--color-surface-raise, #1a1c20)'
@@ -630,7 +630,7 @@ export default function Advisor() {
                   className="flex-shrink-0 flex items-center justify-center rounded-full mr-2 mt-1"
                   style={{ width: 28, height: 28, background: 'var(--color-accent)' }}
                 >
-                  <Bot size={14} color="#fff" />
+                  <Bot size={14} color="var(--color-accent-contrast)" />
                 </div>
               )}
               <div
@@ -639,7 +639,7 @@ export default function Advisor() {
                   maxWidth: '78%',
                   background: msg.role === 'user' ? 'var(--color-accent)' : 'var(--color-surface)',
                   border: msg.role === 'advisor' ? '1px solid var(--color-border)' : 'none',
-                  color: msg.role === 'user' ? '#fff' : 'var(--color-text-primary)',
+                  color: msg.role === 'user' ? 'var(--color-accent-contrast)' : 'var(--color-text-primary)',
                   fontSize: 14,
                   lineHeight: 1.65,
                 }}
@@ -674,7 +674,7 @@ export default function Advisor() {
                     }}
                     onMouseEnter={(e) => {
                       e.currentTarget.style.background = 'var(--color-accent)'
-                      e.currentTarget.style.color = '#fff'
+                      e.currentTarget.style.color = 'var(--color-accent-contrast)'
                     }}
                     onMouseLeave={(e) => {
                       e.currentTarget.style.background = 'var(--color-surface)'
@@ -699,8 +699,8 @@ export default function Advisor() {
                       fontWeight: 500,
                       padding: '6px 13px',
                       borderRadius: 20,
-                      background: 'rgba(26,86,219,0.10)',
-                      border: '1px solid rgba(26,86,219,0.35)',
+                      background: 'var(--color-accent-soft)',
+                      border: '1px solid color-mix(in srgb, var(--color-accent) 35%, transparent)',
                       color: 'var(--color-accent-text)',
                       cursor: 'pointer',
                       transition: 'background 0.15s, border-color 0.15s, color 0.15s',
@@ -708,13 +708,13 @@ export default function Advisor() {
                     }}
                     onMouseEnter={(e) => {
                       e.currentTarget.style.background = 'var(--color-accent)'
-                      e.currentTarget.style.color = '#fff'
+                      e.currentTarget.style.color = 'var(--color-accent-contrast)'
                       e.currentTarget.style.borderColor = 'var(--color-accent)'
                     }}
                     onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'rgba(26,86,219,0.10)'
+                      e.currentTarget.style.background = 'var(--color-accent-soft)'
                       e.currentTarget.style.color = 'var(--color-accent-text)'
-                      e.currentTarget.style.borderColor = 'rgba(26,86,219,0.35)'
+                      e.currentTarget.style.borderColor = 'color-mix(in srgb, var(--color-accent) 35%, transparent)'
                     }}
                   >
                     {action.label}
@@ -738,7 +738,7 @@ export default function Advisor() {
                         width: 26, height: 26, borderRadius: 8,
                         background: active ? 'var(--color-accent)' : 'transparent',
                         border: `1px solid ${active ? 'var(--color-accent)' : 'var(--color-border)'}`,
-                        color: active ? '#fff' : 'var(--color-text-muted)',
+                        color: active ? 'var(--color-accent-contrast)' : 'var(--color-text-muted)',
                         cursor: 'pointer', transition: 'all 0.15s',
                       }}
                     >
@@ -817,7 +817,7 @@ export default function Advisor() {
               justifyContent: 'center',
               background: input.trim() && !isLoading ? 'var(--color-accent)' : 'var(--color-surface)',
               border: '1px solid var(--color-border)',
-              color: input.trim() && !isLoading ? '#fff' : 'var(--color-text-muted)',
+              color: input.trim() && !isLoading ? 'var(--color-accent-contrast)' : 'var(--color-text-muted)',
               cursor: input.trim() && !isLoading ? 'pointer' : 'default',
               transition: 'background 0.15s, color 0.15s',
             }}

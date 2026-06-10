@@ -82,7 +82,7 @@ export default function ResetPassword() {
 
                 <button type="submit" disabled={isSubmitting}
                   className="w-full py-2.5 rounded-lg font-semibold transition-opacity disabled:opacity-60"
-                  style={{ background: 'var(--color-accent)', color: '#000', fontSize: 14, marginTop: 8 }}>
+                  style={{ background: 'var(--color-accent)', color: 'var(--color-accent-contrast)', fontSize: 14, marginTop: 8 }}>
                   {isSubmitting ? 'Saving…' : 'Set new password'}
                 </button>
               </form>

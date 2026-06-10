@@ -3,38 +3,34 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Plus, Trash2, X, ChevronRight, ChevronLeft,
-  Layers, Target, RefreshCw, Clock, BarChart2, Bot, Send,
+  Layers, Target, RefreshCw, Bot, Send,
 } from 'lucide-react'
-import { workspaceApi, transactionsApi, insightsApi, advisorApi, ledgerApi } from '../lib/api'
+import { workspaceApi, advisorApi, ledgerApi } from '../lib/api'
 import type { CustomGroup, Goal, LedgerRow } from '../lib/api'
 import { useWorkspace } from '../context/WorkspaceContext'
-import { useFilters } from '../context/FilterContext'
 import { usePanel } from '../context/PanelContext'
-import { formatCurrency, formatDate, getCategoryColor } from '../lib/utils'
+import { formatCurrency } from '../lib/utils'
 
 export const PANEL_WIDTH = 300
 
 // ── Tab config ────────────────────────────────────────────────────────────────
 
-type TabId = 'recent' | 'insights' | 'budgets' | 'recurring' | 'groups'
+type TabId = 'budgets' | 'recurring' | 'groups'
 
-// All five tabs render on every page; only the initial selection changes.
-const ALL_TABS: TabId[] = ['recent', 'insights', 'budgets', 'recurring', 'groups']
+// All three tabs render on every page; only the initial selection changes.
+const ALL_TABS: TabId[] = ['budgets', 'recurring', 'groups']
 
 const ROUTE_DEFAULT_TAB: Record<string, TabId> = {
-  '/overview':     'recent',
-  '/transactions': 'insights',
-  '/categories':   'budgets',
-  '/merchants':    'budgets',
+  '/overview':     'budgets',
+  '/transactions': 'recurring',
   '/canvas':       'groups',
   '/advisor':      'budgets',
   '/settings':     'budgets',
+  '/insights':     'budgets',
 }
 const FALLBACK_DEFAULT_TAB: TabId = 'budgets'
 
 const TAB_LABEL: Record<TabId, string> = {
-  recent:    'Recent',
-  insights:  'Insights',
   budgets:   'Budgets',
   recurring: 'Recurring',
   groups:    'Groups',
@@ -62,169 +58,6 @@ function ProgressBar({ value, max, color }: { value: number; max: number; color?
   return (
     <div style={{ height: 4, borderRadius: 2, background: 'var(--color-border)' }}>
       <div style={{ height: 4, borderRadius: 2, width: `${pct}%`, background: barColor, transition: 'width 0.3s' }} />
-    </div>
-  )
-}
-
-// ── Recent tab ────────────────────────────────────────────────────────────────
-
-function RecentTab() {
-  const { range, institution, account } = useFilters()
-  const { data: transactions = [], isLoading } = useQuery({
-    queryKey: ['transactions', range, institution, account, ''],
-    queryFn: () => transactionsApi.list({ range, institution, account, search: '' }),
-    select: (data) => data.slice(0, 5),
-  })
-
-  if (isLoading) {
-    return (
-      <div className="space-y-2">
-        {[...Array(5)].map((_, i) => (
-          <div key={i} className="skeleton rounded-lg" style={{ height: 52 }} />
-        ))}
-      </div>
-    )
-  }
-
-  if (transactions.length === 0) {
-    return <p style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>No transactions in range.</p>
-  }
-
-  return (
-    <div className="space-y-1">
-      {transactions.map((tx) => (
-        <div
-          key={tx.id}
-          className="flex items-center gap-3 rounded-lg px-3 py-2.5"
-          style={{ background: 'var(--color-surface-raise)' }}
-        >
-          <div className="flex-1 min-w-0">
-            <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }} className="truncate">
-              {tx.merchant_normalized || tx.name}
-            </p>
-            <p style={{ fontSize: 10, color: 'var(--color-text-muted)', marginTop: 1 }}>
-              {formatDate(tx.date)} · {tx.category}
-            </p>
-          </div>
-          <span
-            style={{
-              fontSize: 12,
-              fontFamily: 'monospace',
-              fontWeight: 600,
-              color: tx.amount < 0 ? 'var(--color-positive)' : 'var(--color-text-primary)',
-              flexShrink: 0,
-            }}
-          >
-            {formatCurrency(tx.amount)}
-          </span>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-// ── Insights tab ──────────────────────────────────────────────────────────────
-
-function InsightsTab() {
-  const { institution, account } = useFilters()
-  const [catScope, setCatScope] = useState<'month' | 'all'>('month')
-
-  // Ambient stats — independent of the global range filter so users have a
-  // stable reference. Account/institution filters still apply.
-  const { data: allSummary, isLoading: loadingAll } = useQuery({
-    queryKey: ['summary', 'all', institution, account],
-    queryFn: () => insightsApi.summary({ range: 'all', institution, account }),
-    staleTime: 60_000,
-  })
-
-  // By-category bars follow the selected tile (Month or All-time).
-  const now = new Date()
-  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
-  const catRange = catScope === 'month' ? currentMonth : 'all'
-  const { data: categories = [], isLoading: loadingCat } = useQuery({
-    queryKey: ['categories', catRange, institution, account],
-    queryFn: () => insightsApi.categories({ range: catRange, institution, account }),
-  })
-
-  const top5 = categories.slice(0, 5)
-
-  const monthDelta = allSummary?.delta_pct
-  const tiles: Array<{ id: 'month' | 'all'; label: string; value?: number; deltaPct?: number }> = [
-    { id: 'month', label: 'Month', value: allSummary?.this_month, deltaPct: monthDelta },
-    { id: 'all', label: 'All-time', value: allSummary?.total_spent },
-  ]
-
-  return (
-    <div className="space-y-5">
-      <div className="grid grid-cols-2 gap-2">
-        {tiles.map(({ id, label, value, deltaPct }) => {
-          const active = catScope === id
-          const showDelta = deltaPct !== undefined && deltaPct !== null && isFinite(deltaPct)
-          const up = (deltaPct ?? 0) > 0
-          const deltaColor = !showDelta
-            ? 'var(--color-text-muted)'
-            : up ? 'var(--color-negative)' : 'var(--color-positive)'
-          return (
-            <button
-              key={id}
-              onClick={() => setCatScope(id)}
-              className="rounded-lg p-3 text-left"
-              style={{
-                background: 'var(--color-surface-raise)',
-                border: `1px solid ${active ? 'var(--color-accent)' : 'transparent'}`,
-                cursor: 'pointer',
-                transition: 'border-color 0.15s',
-              }}
-            >
-              <p style={{ fontSize: 10, color: 'var(--color-text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</p>
-              {loadingAll
-                ? <div className="skeleton mt-1" style={{ height: 16, width: 60 }} />
-                : <p style={{ fontSize: 14, fontWeight: 700, fontFamily: 'monospace', color: 'var(--color-text-primary)', marginTop: 2 }}>{value !== undefined ? formatCurrency(value) : '—'}</p>
-              }
-              {showDelta && !loadingAll && (
-                <p style={{ fontSize: 10, fontWeight: 600, color: deltaColor, marginTop: 2 }}>
-                  {up ? '▲' : '▼'} {Math.abs(deltaPct!).toFixed(0)}% vs last
-                </p>
-              )}
-            </button>
-          )
-        })}
-      </div>
-
-      <div>
-        <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10 }}>
-          By Category · {catScope === 'month' ? 'this month' : 'all-time'}
-        </p>
-        {loadingCat ? (
-          <div className="space-y-3">
-            {[...Array(4)].map((_, i) => <div key={i} className="skeleton rounded" style={{ height: 28 }} />)}
-          </div>
-        ) : top5.length === 0 ? (
-          <p style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>No data</p>
-        ) : (
-          <div className="space-y-3">
-            {top5.map((cat) => {
-              const color = getCategoryColor(cat.category)
-              return (
-                <div key={cat.category}>
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <div style={{ width: 7, height: 7, borderRadius: '50%', background: color, flexShrink: 0 }} />
-                      <span style={{ fontSize: 11, color: 'var(--color-text-secondary)' }} className="truncate">{cat.category}</span>
-                    </div>
-                    <span style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--color-text-primary)', flexShrink: 0, marginLeft: 6 }}>
-                      {formatCurrency(cat.total)}
-                    </span>
-                  </div>
-                  <div className="rounded-full overflow-hidden" style={{ height: 4, background: 'var(--color-border)' }}>
-                    <div className="h-full rounded-full" style={{ width: `${cat.pct}%`, background: color }} />
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        )}
-      </div>
     </div>
   )
 }
@@ -550,7 +383,7 @@ function GoalsSection() {
                         style={{
                           flex: 1, fontSize: 12, padding: '5px 0', borderRadius: 7,
                           background: invalid ? 'var(--color-surface)' : 'var(--color-accent)',
-                          color: invalid ? 'var(--color-text-muted)' : '#fff',
+                          color: invalid ? 'var(--color-text-muted)' : 'var(--color-accent-contrast)',
                           border: `1px solid ${invalid ? 'var(--color-border)' : 'var(--color-accent)'}`,
                           cursor: invalid ? 'default' : 'pointer',
                           fontWeight: 500, transition: 'background 0.15s',
@@ -608,7 +441,7 @@ function GoalsSection() {
             <button
               onClick={handleAdd} disabled={createMutation.isPending || !newTitle.trim()}
               className="flex-1 rounded-md font-medium"
-              style={{ background: 'var(--color-accent)', color: '#fff', padding: '5px 0', fontSize: 12 }}
+              style={{ background: 'var(--color-accent)', color: 'var(--color-accent-contrast)', padding: '5px 0', fontSize: 12 }}
             >
               {createMutation.isPending ? 'Saving…' : 'Save'}
             </button>
@@ -758,7 +591,7 @@ function BudgetTab() {
           />
           <div className="flex gap-1.5">
             <button onClick={handleAdd} disabled={upsertMutation.isPending} className="flex-1 rounded-md font-medium"
-              style={{ background: 'var(--color-accent)', color: '#fff', padding: '5px 0', fontSize: 12 }}>
+              style={{ background: 'var(--color-accent)', color: 'var(--color-accent-contrast)', padding: '5px 0', fontSize: 12 }}>
               Save
             </button>
             <button onClick={() => { setAdding(false); setNewAmount('') }} className="rounded-md"
@@ -820,7 +653,7 @@ function GroupForm({
         onChange={(e) => setGoalStr(e.target.value)} step="1" min="0" style={{ fontSize: 12, width: '100%' }} />
       <div className="flex gap-1.5">
         <button onClick={handleSave} disabled={saving || !name.trim()} className="flex-1 rounded-md font-medium"
-          style={{ background: 'var(--color-accent)', color: '#fff', padding: '5px 0', fontSize: 12 }}>
+          style={{ background: 'var(--color-accent)', color: 'var(--color-accent-contrast)', padding: '5px 0', fontSize: 12 }}>
           {saving ? 'Saving…' : 'Save'}
         </button>
         <button onClick={onCancel} className="rounded-md"
@@ -1000,7 +833,7 @@ function AdvisorWidget() {
           className="flex items-center justify-center rounded-full flex-shrink-0"
           style={{ width: 20, height: 20, background: 'var(--color-accent)' }}
         >
-          <Bot size={11} color="#fff" />
+          <Bot size={11} color="var(--color-accent-contrast)" />
         </div>
         <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-secondary)' }}>
           Ask your advisor
@@ -1063,7 +896,7 @@ function AdvisorWidget() {
             justifyContent: 'center',
             background: input.trim() ? 'var(--color-accent)' : 'var(--color-surface-raise)',
             border: '1px solid var(--color-border)',
-            color: input.trim() ? '#fff' : 'var(--color-text-muted)',
+            color: input.trim() ? 'var(--color-accent-contrast)' : 'var(--color-text-muted)',
             cursor: input.trim() ? 'pointer' : 'default',
             transition: 'background 0.15s, color 0.15s',
           }}
@@ -1078,8 +911,6 @@ function AdvisorWidget() {
 // ── Tab icon map ──────────────────────────────────────────────────────────────
 
 const TAB_ICON: Record<TabId, React.ElementType> = {
-  recent:    Clock,
-  insights:  BarChart2,
   budgets:   Target,
   recurring: RefreshCw,
   groups:    Layers,
@@ -1176,7 +1007,7 @@ export default function RightPanel({ isOpen, onToggle }: RightPanelProps) {
                   className="flex flex-col items-center gap-0.5 px-1 pb-2 flex-1 justify-center"
                   title={TAB_LABEL[tab]}
                   style={{
-                    fontSize: 10,
+                    fontSize: 11,
                     fontWeight: isActive ? 600 : 500,
                     color: isActive ? 'var(--color-accent-text)' : 'var(--color-text-muted)',
                     borderTop: 'none',
@@ -1190,7 +1021,7 @@ export default function RightPanel({ isOpen, onToggle }: RightPanelProps) {
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  <Icon size={12} />
+                  <Icon size={13} />
                   {TAB_LABEL[tab]}
                 </button>
               )
@@ -1199,8 +1030,6 @@ export default function RightPanel({ isOpen, onToggle }: RightPanelProps) {
 
           {/* Tab content */}
           <div className="flex-1 overflow-y-auto px-5 py-4" style={{ scrollbarWidth: 'thin' }}>
-            {activeTab === 'recent'    && <RecentTab />}
-            {activeTab === 'insights'  && <InsightsTab />}
             {activeTab === 'budgets'   && <BudgetTab />}
             {activeTab === 'recurring' && <RecurringTab />}
             {activeTab === 'groups'    && <GroupsTab />}

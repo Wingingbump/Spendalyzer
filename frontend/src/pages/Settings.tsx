@@ -3,8 +3,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { Trash2, Plus, Sun, Moon, CreditCard, Shield, Palette, Tag, AlertTriangle, UserCircle, FileText, ChevronDown, ChevronUp, Check, Lock, Eye, XCircle } from 'lucide-react'
-import { accountsApi, plaidApi, settingsApi, categoriesApi } from '../lib/api'
+import { Trash2, Plus, Sun, Moon, CreditCard, Shield, Palette, Tag, AlertTriangle, UserCircle, FileText, ChevronDown, ChevronUp, Check, Lock, Eye, XCircle, RefreshCw } from 'lucide-react'
+import { accountsApi, plaidApi, settingsApi, categoriesApi, syncApi } from '../lib/api'
 import { useTheme, type DarkPalette, type LightPalette } from '../context/ThemeContext'
 import { useAuth } from '../context/AuthContext'
 import Card from '../components/Card'
@@ -364,6 +364,14 @@ export default function Settings() {
     }
   }
 
+  // ── Full Sync ───────────────────────────────────────────────────────────────
+  const fullSyncMutation = useMutation({
+    mutationFn: () => syncApi.sync(true),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ refetchType: 'all' })
+    },
+  })
+
   // ── Plaid ────────────────────────────────────────────────────────────────────
   const [plaidLoading, setPlaidLoading] = useState(false)
   const [plaidError, setPlaidError] = useState('')
@@ -584,7 +592,7 @@ export default function Settings() {
                 type="submit"
                 disabled={profileSubmitting}
                 className="px-4 py-2 rounded-lg font-medium transition-opacity disabled:opacity-60"
-                style={{ background: 'var(--color-accent)', color: '#000', fontSize: 13 }}
+                style={{ background: 'var(--color-accent)', color: 'var(--color-accent-contrast)', fontSize: 13 }}
               >
                 {profileSubmitting ? 'Saving…' : 'Save changes'}
               </button>
@@ -660,7 +668,7 @@ export default function Settings() {
           onClick={handleConnectPlaid}
           disabled={plaidLoading}
           className="flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-opacity disabled:opacity-60"
-          style={{ background: 'var(--color-accent)', color: '#000', fontSize: 13 }}
+          style={{ background: 'var(--color-accent)', color: 'var(--color-accent-contrast)', fontSize: 13 }}
         >
           {plaidLoading ? <Spinner size={14} /> : <Plus size={14} />}
           {plaidLoading ? 'Connecting…' : 'Connect Account'}
@@ -669,6 +677,44 @@ export default function Settings() {
         {plaidError && (
           <p className="mt-2" style={{ fontSize: 12, color: 'var(--color-negative)' }}>{plaidError}</p>
         )}
+
+        {/* Full history sync */}
+        <div className="mt-6 pt-6" style={{ borderTop: '1px solid var(--color-border)' }}>
+          <label style={{ fontSize: 12, color: 'var(--color-text-muted)', fontWeight: 500, display: 'block', marginBottom: 8 }}>
+            Full history sync
+          </label>
+          <p className="mb-3" style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>
+            Re-pull up to 24 months of transaction history from Plaid. Use this if transactions are missing.
+          </p>
+          <button
+            onClick={() => fullSyncMutation.mutate()}
+            disabled={fullSyncMutation.isPending}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-opacity disabled:opacity-60"
+            style={{ background: 'var(--color-accent)', color: 'var(--color-accent-contrast)', fontSize: 13 }}
+          >
+            {fullSyncMutation.isPending ? (
+              <>
+                <RefreshCw size={14} className="spinner" />
+                Full sync…
+              </>
+            ) : (
+              <>
+                <RefreshCw size={14} />
+                Full history sync
+              </>
+            )}
+          </button>
+          {fullSyncMutation.isSuccess && (
+            <p className="mt-2" style={{ fontSize: 12, color: 'var(--color-positive)' }}>
+              +{fullSyncMutation.data?.synced_count ?? 0} transactions
+            </p>
+          )}
+          {fullSyncMutation.isError && (
+            <p className="mt-2" style={{ fontSize: 12, color: 'var(--color-negative)' }}>
+              Sync failed
+            </p>
+          )}
+        </div>
       </Card>
 
       {/* ── Section 2: Security ─────────────────────────────────────────────── */}
@@ -715,7 +761,7 @@ export default function Settings() {
             type="submit"
             disabled={pwSubmitting}
             className="px-4 py-2 rounded-lg font-medium transition-opacity disabled:opacity-60"
-            style={{ background: 'var(--color-accent)', color: '#000', fontSize: 13 }}
+            style={{ background: 'var(--color-accent)', color: 'var(--color-accent-contrast)', fontSize: 13 }}
           >
             {pwSubmitting ? 'Updating…' : 'Update Password'}
           </button>
@@ -734,7 +780,7 @@ export default function Settings() {
             className="flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium transition-all"
             style={{
               background: theme === 'dark' ? 'var(--color-accent)' : 'var(--color-surface-raise)',
-              color: theme === 'dark' ? '#fff' : 'var(--color-text-secondary)',
+              color: theme === 'dark' ? 'var(--color-accent-contrast)' : 'var(--color-text-secondary)',
               border: theme === 'dark' ? '1px solid transparent' : '1px solid var(--color-border)',
               fontSize: 13,
             }}
@@ -746,7 +792,7 @@ export default function Settings() {
             className="flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium transition-all"
             style={{
               background: theme === 'light' ? 'var(--color-accent)' : 'var(--color-surface-raise)',
-              color: theme === 'light' ? '#fff' : 'var(--color-text-secondary)',
+              color: theme === 'light' ? 'var(--color-accent-contrast)' : 'var(--color-text-secondary)',
               border: theme === 'light' ? '1px solid transparent' : '1px solid var(--color-border)',
               fontSize: 13,
             }}
@@ -831,7 +877,7 @@ export default function Settings() {
             onClick={handleAddCategory}
             disabled={addCategoryMutation.isPending || !newCategoryName.trim()}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-medium transition-opacity disabled:opacity-50"
-            style={{ background: 'var(--color-accent)', color: '#000', fontSize: 13, border: 'none', cursor: 'pointer', flexShrink: 0 }}
+            style={{ background: 'var(--color-accent)', color: 'var(--color-accent-contrast)', fontSize: 13, border: 'none', cursor: 'pointer', flexShrink: 0 }}
           >
             <Plus size={13} />
             Add

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
   LayoutDashboard, List, Target, Bot, MoreHorizontal,
-  Store, Tag, LayoutGrid, Settings, X,
+  PieChart, LayoutGrid, Settings, X,
 } from 'lucide-react'
 
 const PRIMARY_NAV = [
@@ -13,10 +13,9 @@ const PRIMARY_NAV = [
 ]
 
 const MORE_NAV = [
-  { to: '/merchants',   label: 'Merchants',   icon: Store },
-  { to: '/categories',  label: 'Categories',  icon: Tag },
-  { to: '/canvas',      label: 'Canvas',      icon: LayoutGrid },
-  { to: '/settings',    label: 'Settings',    icon: Settings },
+  { to: '/insights',   label: 'Insights',   icon: PieChart },
+  { to: '/canvas',     label: 'Canvas',     icon: LayoutGrid },
+  { to: '/settings',   label: 'Settings',   icon: Settings },
 ]
 
 export default function BottomNav() {
@@ -53,7 +52,7 @@ export default function BottomNav() {
                   onClick={() => setMoreOpen(false)}
                   className="flex flex-col items-center gap-1.5 py-3 rounded-xl"
                   style={({ isActive }) => ({
-                    background: isActive ? 'rgba(26, 86, 219, 0.1)' : 'var(--color-surface-raise)',
+                    background: isActive ? 'var(--color-accent-soft)' : 'var(--color-surface-raise)',
                     color: isActive ? 'var(--color-accent-text)' : 'var(--color-text-secondary)',
                   })}
                 >

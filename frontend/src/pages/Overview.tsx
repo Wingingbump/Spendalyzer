@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, Cell,
 } from 'recharts'
-import { ShoppingBag, Store, Calendar, CreditCard, X, BarChart2, ArrowLeftRight, Bot, ChevronRight, ChevronLeft, AlertTriangle, RefreshCw, CheckCircle } from 'lucide-react'
+import { ShoppingBag, Store, Calendar, CreditCard, X, BarChart2, ArrowLeftRight, Bot, ChevronRight, ChevronLeft, AlertTriangle, RefreshCw, Landmark } from 'lucide-react'
 import { accountsApi, insightsApi, syncApi } from '../lib/api'
 import type { HealthWarning } from '../lib/api'
 import { useFilters } from '../context/FilterContext'
@@ -49,10 +49,36 @@ function DowTooltip({ active, payload, label }: { active?: boolean; payload?: Ar
 }
 
 
+function ChartEmptyState() {
+  const navigate = useNavigate()
+  return (
+    <div className="flex flex-col items-center justify-center gap-2" style={{ height: 200 }}>
+      <Landmark size={20} style={{ color: 'var(--color-text-muted)' }} />
+      <p style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>Connect your bank to see this</p>
+      <button
+        onClick={() => navigate('/settings')}
+        style={{
+          marginTop: 4,
+          padding: '5px 14px',
+          fontSize: 12,
+          fontWeight: 600,
+          background: 'var(--color-accent)',
+          color: 'var(--color-accent-contrast)',
+          border: 'none',
+          borderRadius: 6,
+          cursor: 'pointer',
+        }}
+      >
+        Connect account
+      </button>
+    </div>
+  )
+}
+
 const TOUR_SLIDES = [
   {
     icon: CreditCard,
-    iconBg: 'rgba(200,255,0,0.12)',
+    iconBg: 'var(--color-accent-soft)',
     iconColor: 'var(--color-accent)',
     title: 'Welcome to spend.',
     body: 'spend. pulls your real transactions from your bank and turns them into insights — and eventually, personalized AI advice. Let\'s show you around.',
@@ -60,7 +86,7 @@ const TOUR_SLIDES = [
   },
   {
     icon: BarChart2,
-    iconBg: 'rgba(200,255,0,0.12)',
+    iconBg: 'var(--color-accent-soft)',
     iconColor: 'var(--color-accent)',
     title: 'Overview',
     body: 'Your financial snapshot. See total spending, monthly trends, top categories, and your biggest purchases — all filterable by account and time range.',
@@ -84,7 +110,7 @@ const TOUR_SLIDES = [
   },
   {
     icon: CreditCard,
-    iconBg: 'rgba(200,255,0,0.12)',
+    iconBg: 'var(--color-accent-soft)',
     iconColor: 'var(--color-accent)',
     title: 'First step: connect an account',
     body: 'Head to Settings to connect your bank via Plaid. Once connected, your transactions will sync automatically and everything comes to life.',
@@ -157,7 +183,7 @@ function OnboardingTour({ onDismiss }: { onDismiss: () => void }) {
               }
             }}
             className="flex-1 py-2.5 rounded-lg font-semibold flex items-center justify-center gap-1.5"
-            style={{ background: 'var(--color-accent)', color: '#000', fontSize: 14 }}
+            style={{ background: 'var(--color-accent)', color: 'var(--color-accent-contrast)', fontSize: 14 }}
           >
             {isLast ? (slide.cta ?? 'Done') : 'Next'}
             {!isLast && <ChevronRight size={14} />}
@@ -192,17 +218,7 @@ function DataHealthCard() {
   const isError = health.status === 'error'
   const warnings = health.warnings
 
-  if (isOk) {
-    return (
-      <div
-        className="flex items-center gap-2 px-4 py-2.5 rounded-xl"
-        style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}
-      >
-        <CheckCircle size={14} style={{ color: 'var(--color-positive)', flexShrink: 0 }} />
-        <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>All data looks healthy</span>
-      </div>
-    )
-  }
+  if (isOk) return null
 
   return (
     <div
@@ -281,10 +297,6 @@ export default function Overview() {
   const chartColors = theme === 'dark' ? CHART_COLORS_DARK : CHART_COLORS_LIGHT
   const params = { range, institution, account }
   const INSIGHTS_STALE = 3 * 60_000
-  // Early in the month, this-month spend is too sparse to be useful — default the
-  // headline card to a rolling 30-day window for the first 5 days, then to this month.
-  const earlyMonth = new Date().getDate() <= 5
-  const [monthView, setMonthView] = useState<'this' | 'last' | '30d'>(earlyMonth ? '30d' : 'this')
   const [catView, setCatView] = useState<'all' | 'month'>('all')
 
   const { data: accounts = [], isLoading: loadingAccounts } = useQuery({
@@ -371,18 +383,8 @@ export default function Overview() {
     : null
   const burnIsUnder = burnVsLastPct !== null && burnVsLastPct <= 0
 
-  // ── Headline card (This month / Last month / Past 30 days) ──────────────────
+  // ── Headline card derived values ──────────────────────────────────────────
   const mv30Positive = (summary?.last_30_days_delta ?? 0) <= 0
-  const mvLabel = monthView === '30d' ? 'Past 30 Days' : monthView === 'this' ? 'This Month' : 'Last Month'
-  const mvValue = monthView === '30d' ? summary?.last_30_days : monthView === 'this' ? summary?.this_month : summary?.last_month
-  const mvSub = summary
-    ? monthView === 'this'
-      ? `${isPositiveDelta ? '↓' : '↑'} ${formatCurrency(Math.abs(delta))} vs last month (${Math.abs(deltaPct).toFixed(1)}%)`
-      : monthView === 'last'
-        ? 'Final total for last month'
-        : `${mv30Positive ? '↓' : '↑'} ${formatCurrency(Math.abs(summary.last_30_days_delta))} vs prior 30 days (${Math.abs(summary.last_30_days_delta_pct).toFixed(1)}%)`
-    : undefined
-  const mvSubPositive = monthView === 'this' ? isPositiveDelta : monthView === '30d' ? mv30Positive : undefined
 
   return (
     <div className="space-y-5 fade-in">
@@ -401,21 +403,51 @@ export default function Overview() {
 
       {/* Metric Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <MetricCard
-          label={mvLabel}
-          value={formatCurrency(mvValue ?? 0)}
-          sub={mvSub}
-          subPositive={mvSubPositive}
-          isLoading={loadingSummary}
-          hero
-          tabs={[
-            { key: '30d', label: '30 Days' },
-            { key: 'this', label: 'This Month' },
-            { key: 'last', label: 'Last Month' },
-          ]}
-          activeTab={monthView}
-          onTabChange={(k) => setMonthView(k as 'this' | 'last' | '30d')}
-        />
+        {/* Hero: comparative spending card */}
+        <div
+          className="rounded-xl p-4 relative overflow-hidden"
+          style={{ background: 'var(--color-accent)' }}
+        >
+          {/* subtle glare */}
+          <div style={{ position: 'absolute', right: -16, top: -16, width: 120, height: 120, borderRadius: '50%', background: 'rgba(255,255,255,0.06)', filter: 'blur(20px)', pointerEvents: 'none' }} />
+          <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.65)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
+            This Month
+          </p>
+          {loadingSummary ? (
+            <Spinner size={20} />
+          ) : (
+            <>
+              <p style={{ fontSize: 26, fontWeight: 700, fontFamily: 'ui-monospace, monospace', color: 'var(--color-accent-contrast)', lineHeight: 1.1 }}>
+                {formatCurrency(summary?.this_month ?? 0)}
+              </p>
+              {summary && (
+                <div className="mt-2 inline-flex items-center gap-1 px-2 py-0.5 rounded" style={{ background: 'rgba(255,255,255,0.15)', fontSize: 11, fontWeight: 600, color: isPositiveDelta ? 'rgba(90,230,160,0.95)' : 'rgba(255,120,100,0.95)' }}>
+                  {`${isPositiveDelta ? '↓' : '↑'} ${formatCurrency(Math.abs(delta))} vs last month (${Math.abs(deltaPct).toFixed(1)}%)`}
+                </div>
+              )}
+              {/* Secondary stats row */}
+              <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.18)', display: 'flex', gap: 20 }}>
+                <div>
+                  <p style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'rgba(255,255,255,0.5)', marginBottom: 3 }}>Last month</p>
+                  <p style={{ fontSize: 13, fontFamily: 'ui-monospace, monospace', fontWeight: 600, color: 'var(--color-accent-contrast)' }}>
+                    {formatCurrency(summary?.last_month ?? 0)}
+                  </p>
+                </div>
+                <div>
+                  <p style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'rgba(255,255,255,0.5)', marginBottom: 3 }}>Past 30 days</p>
+                  <p style={{ fontSize: 13, fontFamily: 'ui-monospace, monospace', fontWeight: 600, color: 'var(--color-accent-contrast)' }}>
+                    {formatCurrency(summary?.last_30_days ?? 0)}
+                  </p>
+                  {summary && (
+                    <p style={{ fontSize: 10, fontWeight: 600, marginTop: 2, color: mv30Positive ? 'rgba(90,230,160,0.85)' : 'rgba(255,120,100,0.85)' }}>
+                      {`${mv30Positive ? '↓' : '↑'} ${Math.abs(summary.last_30_days_delta_pct).toFixed(1)}% vs prior 30d`}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
         <MetricCard
           label={`On Pace For · ${daysRemaining}d left`}
           value={loadingSummary ? '—' : formatCurrency(projected)}
@@ -450,9 +482,9 @@ export default function Overview() {
             <Spinner />
           </div>
         ) : monthly.length === 0 ? (
-          <div className="flex items-center justify-center" style={{ height: 200 }}>
-            <p style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>No data</p>
-          </div>
+          !loadingAccounts && accounts.length === 0
+            ? <ChartEmptyState />
+            : <div className="flex items-center justify-center" style={{ height: 200 }}><p style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>No data</p></div>
         ) : (
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={monthly.map((m) => ({ ...m, label: formatMonth(m.month) }))}>
@@ -528,9 +560,9 @@ export default function Overview() {
               <Spinner />
             </div>
           ) : categories.length === 0 ? (
-            <div className="flex items-center justify-center" style={{ height: 200 }}>
-              <p style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>No data</p>
-            </div>
+            !loadingAccounts && accounts.length === 0
+              ? <ChartEmptyState />
+              : <div className="flex items-center justify-center" style={{ height: 200 }}><p style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>No data</p></div>
           ) : (
             <div className="space-y-2">
               {categories.slice(0, 8).map((cat, i) => (
@@ -565,9 +597,9 @@ export default function Overview() {
               <Spinner />
             </div>
           ) : dow.length === 0 ? (
-            <div className="flex items-center justify-center" style={{ height: 200 }}>
-              <p style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>No data</p>
-            </div>
+            !loadingAccounts && accounts.length === 0
+              ? <ChartEmptyState />
+              : <div className="flex items-center justify-center" style={{ height: 200 }}><p style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>No data</p></div>
           ) : (
             <ResponsiveContainer width="100%" height={200}>
               <BarChart data={dow}>
@@ -597,7 +629,7 @@ export default function Overview() {
         <div className="grid grid-cols-1 sm:grid-cols-3">
           {/* Biggest Purchase */}
           <div className="flex items-start gap-2.5 pr-4">
-            <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: 'rgba(200,255,0,0.10)' }}>
+            <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: 'var(--color-accent-soft)' }}>
               <ShoppingBag size={13} style={{ color: 'var(--color-accent)' }} />
             </div>
             <div className="flex-1 min-w-0">

@@ -10,8 +10,7 @@ const VerifyEmail = lazy(() => import('./pages/VerifyEmail'))
 const ResetPassword = lazy(() => import('./pages/ResetPassword'))
 const Overview = lazy(() => import('./pages/Overview'))
 const Transactions = lazy(() => import('./pages/Transactions'))
-const Merchants = lazy(() => import('./pages/Merchants'))
-const Categories = lazy(() => import('./pages/Categories'))
+const Insights = lazy(() => import('./pages/Insights'))
 const Settings = lazy(() => import('./pages/Settings'))
 const Canvas = lazy(() => import('./pages/Canvas'))
 const Advisor = lazy(() => import('./pages/Advisor'))
@@ -75,19 +74,14 @@ export default function App() {
         />
         {/* Ledger merged into Transactions — keep the old path working */}
         <Route path="/ledger" element={<Navigate to="/transactions" replace />} />
+        {/* Merchants and Categories merged into Insights — keep old paths working */}
+        <Route path="/merchants" element={<Navigate to="/insights?tab=merchants" replace />} />
+        <Route path="/categories" element={<Navigate to="/insights?tab=categories" replace />} />
         <Route
-          path="/merchants"
+          path="/insights"
           element={
             <ProtectedRoute>
-              <Merchants />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/categories"
-          element={
-            <ProtectedRoute>
-              <Categories />
+              <Insights />
             </ProtectedRoute>
           }
         />

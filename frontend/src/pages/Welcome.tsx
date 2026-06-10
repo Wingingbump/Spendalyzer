@@ -96,7 +96,7 @@ export default function Welcome() {
         <Link
           to={ctaTo}
           className="rounded-lg px-4 py-2"
-          style={{ background: 'var(--color-accent)', color: '#000', fontSize: 13, fontWeight: 600 }}
+          style={{ background: 'var(--color-accent)', color: 'var(--color-accent-contrast)', fontSize: 13, fontWeight: 600 }}
         >
           {ctaLabel}
         </Link>
@@ -115,7 +115,7 @@ export default function Welcome() {
           <Link
             to={ctaTo}
             className="rounded-lg px-5 py-2.5 inline-flex items-center gap-2"
-            style={{ background: 'var(--color-accent)', color: '#000', fontSize: 14, fontWeight: 600 }}
+            style={{ background: 'var(--color-accent)', color: 'var(--color-accent-contrast)', fontSize: 14, fontWeight: 600 }}
           >
             {user ? 'Open dashboard' : 'Get started'} <ArrowRight size={16} />
           </Link>
@@ -288,7 +288,7 @@ export default function Welcome() {
           <Link
             to={ctaTo}
             className="mt-5 inline-flex items-center gap-2 rounded-lg px-5 py-2.5"
-            style={{ background: 'var(--color-accent)', color: '#000', fontSize: 14, fontWeight: 600 }}
+            style={{ background: 'var(--color-accent)', color: 'var(--color-accent-contrast)', fontSize: 14, fontWeight: 600 }}
           >
             {user ? 'Open dashboard' : 'Continue to sign in'} <ArrowRight size={16} />
           </Link>

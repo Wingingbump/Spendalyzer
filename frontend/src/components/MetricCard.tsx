@@ -59,7 +59,7 @@ function PlainTabs({ tabs, activeTab, onTabChange }: { tabs: Tab[]; activeTab?: 
             className="px-2.5 py-1 rounded transition-colors"
             style={{
               background: isActive ? 'var(--color-accent)' : 'transparent',
-              color: isActive ? '#fff' : 'var(--color-text-muted)',
+              color: isActive ? 'var(--color-accent-contrast)' : 'var(--color-text-muted)',
               fontSize: 10,
               fontWeight: 700,
               textTransform: 'uppercase',
@@ -96,11 +96,11 @@ export default function MetricCard({ label, value, sub, subPositive, isLoading, 
           <Spinner size={20} />
         ) : (
           <>
-            <p style={{ fontSize: 26, fontWeight: 700, fontFamily: 'ui-monospace, monospace', color: '#fff', lineHeight: 1.1 }}>
+            <p style={{ fontSize: 26, fontWeight: 700, fontFamily: 'ui-monospace, monospace', color: 'var(--color-accent-contrast)', lineHeight: 1.1 }}>
               {value}
             </p>
             {sub && (
-              <div className="mt-2 inline-flex items-center gap-1 px-2 py-0.5 rounded" style={{ background: 'rgba(255,255,255,0.15)', fontSize: 11, color: '#fff', fontWeight: 600 }}>
+              <div className="mt-2 inline-flex items-center gap-1 px-2 py-0.5 rounded" style={{ background: 'rgba(255,255,255,0.15)', fontSize: 11, color: 'var(--color-accent-contrast)', fontWeight: 600 }}>
                 {sub}
               </div>
             )}

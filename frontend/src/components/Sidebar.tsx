@@ -5,8 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   LayoutDashboard,
   List,
-  Store,
-  Tag,
+  PieChart,
   Settings,
   RefreshCw,
   ChevronDown,
@@ -22,11 +21,10 @@ import { formatDate } from '../lib/utils'
 const NAV_ITEMS = [
   { to: '/overview', label: 'Overview', icon: LayoutDashboard },
   { to: '/transactions', label: 'Transactions', icon: List },
-  { to: '/merchants', label: 'Merchants', icon: Store },
-  { to: '/categories', label: 'Categories', icon: Tag },
-  { to: '/canvas', label: 'Canvas', icon: LayoutGrid },
-  { to: '/advisor', label: 'Advisor', icon: Bot },
   { to: '/tracker', label: 'Tracker', icon: Target },
+  { to: '/advisor', label: 'Advisor', icon: Bot },
+  { to: '/insights', label: 'Insights', icon: PieChart },
+  { to: '/canvas', label: 'Canvas', icon: LayoutGrid },
   { to: '/settings', label: 'Settings', icon: Settings },
 ]
 
@@ -114,7 +112,7 @@ export default function Sidebar() {
               }`
             }
             style={({ isActive }) => ({
-              background: isActive ? 'rgba(26, 86, 219, 0.1)' : 'transparent',
+              background: isActive ? 'var(--color-accent-soft)' : 'transparent',
               color: isActive ? 'var(--color-accent-text)' : 'var(--color-text-secondary)',
               borderRight: isActive ? '2px solid var(--color-accent)' : '2px solid transparent',
             })}
@@ -174,49 +172,39 @@ export default function Sidebar() {
 
       {/* Sync section */}
       <div className="px-4 flex-shrink-0">
-        {lastSyncedData?.last_synced_at && (
-          <p style={{ fontSize: 11, color: 'var(--color-text-muted)' }} className="mb-2">
-            Synced {formatDate(lastSyncedData.last_synced_at)}
-          </p>
-        )}
-
-        <button
-          onClick={() => syncMutation.mutate({ fullSync: false })}
-          disabled={syncMutation.isPending}
-          className="flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm font-medium transition-opacity disabled:opacity-50"
-          style={{
-            background: 'var(--color-accent)',
-            color: '#fff',
-            fontSize: 12,
-          }}
-        >
-          <RefreshCw
-            size={13}
-            className={syncMutation.isPending && !syncMutation.variables?.fullSync ? 'spinner' : ''}
-          />
-          {syncMutation.isPending && !syncMutation.variables?.fullSync ? 'Syncing…' : 'Sync Now'}
-        </button>
-        <button
-          onClick={() => syncMutation.mutate({ fullSync: true })}
-          disabled={syncMutation.isPending}
-          title="Re-pull full transaction history from Plaid (up to 24 months). Use this if transactions are missing."
-          className="flex items-center gap-1.5 w-full px-3 py-1.5 rounded-lg transition-opacity disabled:opacity-50"
-          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-muted)', fontSize: 11, marginTop: 4 }}
-        >
-          <RefreshCw
-            size={11}
-            className={syncMutation.isPending && syncMutation.variables?.fullSync ? 'spinner' : ''}
-          />
-          {syncMutation.isPending && syncMutation.variables?.fullSync ? 'Full sync…' : 'Full history sync'}
-        </button>
+        <div className="flex items-center gap-2 mb-2">
+          {lastSyncedData?.last_synced_at && (
+            <p style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
+              Synced {formatDate(lastSyncedData.last_synced_at)}
+            </p>
+          )}
+          <button
+            onClick={() => syncMutation.mutate({ fullSync: false })}
+            disabled={syncMutation.isPending}
+            title="Sync now"
+            className="flex items-center justify-center p-0.5 rounded transition-opacity disabled:opacity-50"
+            style={{
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              color: 'var(--color-text-muted)',
+              flex: 'none',
+            }}
+          >
+            <RefreshCw
+              size={13}
+              className={syncMutation.isPending ? 'spinner' : ''}
+            />
+          </button>
+        </div>
         {syncMutation.isSuccess && (
-          <p className="mt-1" style={{ fontSize: 11, color: 'var(--color-positive)' }}>
+          <p style={{ fontSize: 11, color: 'var(--color-positive)' }}>
             +{syncMutation.data?.synced_count ?? 0} transactions
           </p>
         )}
 
         {syncMutation.isError && (
-          <p className="mt-1" style={{ fontSize: 11, color: 'var(--color-negative)' }}>
+          <p style={{ fontSize: 11, color: 'var(--color-negative)' }}>
             Sync failed
           </p>
         )}
@@ -245,7 +233,7 @@ export default function Sidebar() {
         >
           <div
             className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
-            style={{ background: 'var(--color-accent)', color: '#fff' }}
+            style={{ background: 'var(--color-accent)', color: 'var(--color-accent-contrast)' }}
           >
             {user?.username?.[0]?.toUpperCase() ?? 'U'}
           </div>

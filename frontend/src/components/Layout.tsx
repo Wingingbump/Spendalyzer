@@ -1,5 +1,7 @@
 import React, { useState } from 'react'
 import { useLocation } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
+import { X } from 'lucide-react'
 import Sidebar from './Sidebar'
 import RightPanel from './RightPanel'
 import BottomNav from './BottomNav'
@@ -10,8 +12,81 @@ import type { TabFocusRequest } from '../context/PanelContext'
 import { useAuth } from '../context/AuthContext'
 import { useIdleTimeout } from '../hooks/useIdleTimeout'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useFilters } from '../context/FilterContext'
+import { insightsApi } from '../lib/api'
 
 const PANEL_HIDDEN_ROUTES = ['/settings', '/login']
+
+function FilterChips() {
+  const { institution, account, setInstitution, setAccount } = useFilters()
+  const { data: institutions = [] } = useQuery({
+    queryKey: ['institutions'],
+    queryFn: () => insightsApi.institutions(),
+    staleTime: 60_000,
+  })
+  const { data: accounts = [] } = useQuery({
+    queryKey: ['sidebar-accounts'],
+    queryFn: () => insightsApi.accounts(),
+    staleTime: 60_000,
+  })
+
+  const hasActiveFilters = institution !== 'all' || account !== 'all'
+  if (!hasActiveFilters) return null
+
+  const institutionName = institutions.find(i => i === institution) || institution
+  const accountData = accounts.find(a => a.plaid_account_id === account)
+  const accountDisplay = accountData ? `${accountData.name} ••${accountData.mask}` : account
+
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div className="flex items-center gap-2 flex-wrap">
+        <span style={{ fontSize: 11, color: 'var(--color-text-muted)', fontWeight: 500 }}>
+          Filtered:
+        </span>
+        {institution !== 'all' && (
+          <button
+            onClick={() => setInstitution('all')}
+            className="flex items-center gap-1.5 rounded-full"
+            style={{
+              fontSize: 12,
+              padding: '4px 10px',
+              borderRadius: 999,
+              background: 'var(--color-accent-soft)',
+              border: '1px solid color-mix(in srgb, var(--color-accent) 25%, transparent)',
+              color: 'var(--color-text-primary)',
+              cursor: 'pointer',
+              display: 'inline-flex',
+            }}
+            title={`Clear ${institutionName} filter`}
+          >
+            <span>{institutionName}</span>
+            <X size={12} style={{ color: 'var(--color-text-muted)', flexShrink: 0 }} />
+          </button>
+        )}
+        {account !== 'all' && (
+          <button
+            onClick={() => setAccount('all')}
+            className="flex items-center gap-1.5 rounded-full"
+            style={{
+              fontSize: 12,
+              padding: '4px 10px',
+              borderRadius: 999,
+              background: 'var(--color-accent-soft)',
+              border: '1px solid color-mix(in srgb, var(--color-accent) 25%, transparent)',
+              color: 'var(--color-text-primary)',
+              cursor: 'pointer',
+              display: 'inline-flex',
+            }}
+            title={`Clear account filter`}
+          >
+            <span>{accountDisplay}</span>
+            <X size={12} style={{ color: 'var(--color-text-muted)', flexShrink: 0 }} />
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
 
 interface LayoutProps {
   children: React.ReactNode
@@ -70,6 +145,7 @@ export default function Layout({ children }: LayoutProps) {
         >
           {isMobile && <MobileHeader />}
           <div className={isMobile ? 'p-4' : 'p-6'}>
+            {!isMobile && <FilterChips />}
             {children}
           </div>
         </main>
@@ -145,7 +221,7 @@ export default function Layout({ children }: LayoutProps) {
                 className="flex-1 py-2 rounded-lg font-semibold"
                 style={{
                   background: 'var(--color-accent)',
-                  color: '#fff',
+                  color: 'var(--color-accent-contrast)',
                   fontSize: 13,
                   cursor: 'pointer',
                   border: 'none',

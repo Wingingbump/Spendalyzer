@@ -1,6 +1,6 @@
-import React, { useState, useMemo } from 'react'
+import React, { useState, useMemo, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Search, Check, Plus, Trash2, X, Tag, Download, AlertTriangle, Repeat, ChevronUp, ChevronDown, ChevronsUpDown, Pencil, SlidersHorizontal } from 'lucide-react'
+import { Search, Check, Plus, Trash2, X, Tag, Download, AlertTriangle, Repeat, ChevronUp, ChevronDown, ChevronsUpDown, Pencil, SlidersHorizontal, Eye } from 'lucide-react'
 import { ledgerApi, transactionsApi, workspaceApi, merchantsApi, categoriesApi } from '../lib/api'
 import type { LedgerRow, RecurringRule } from '../lib/api'
 import { useFilters } from '../context/FilterContext'
@@ -12,6 +12,17 @@ import { formatCurrency, formatDate, getCategoryColor } from '../lib/utils'
 import SkeletonRow from '../components/SkeletonRow'
 import RangeSelect from '../components/RangeSelect'
 import { ActiveGroupBanner } from '../components/RightPanel'
+import TransactionDrawer from '../components/TransactionDrawer'
+
+// ── Shared escape-key hook ────────────────────────────────────────────────
+function useEscapeKey(active: boolean, onClose: () => void) {
+  useEffect(() => {
+    if (!active) return
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [active, onClose])
+}
 
 interface EditState {
   [id: number]: {
@@ -52,6 +63,7 @@ export default function Transactions() {
   const [types, setTypes] = useState<string[]>(['debit', 'credit'])
   const [categories, setCategories] = useState<string[]>([])  // empty = all
   const [catMenuOpen, setCatMenuOpen] = useState(false)
+  const [showMenuOpen, setShowMenuOpen] = useState(false)
   const [rulesOpen, setRulesOpen] = useState(false)
   const [ruleDraft, setRuleDraft] = useState<{ key: string; value: string } | null>(null)
   const [showTransfers, setShowTransfers] = useState(false)
@@ -60,16 +72,30 @@ export default function Transactions() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [editState, setEditState] = useState<EditState>({})
   const [saved, setSaved] = useState<SavedState>({})
-  const [editingMerchant, setEditingMerchant] = useState<number | null>(null)
-  const [merchantDraft, setMerchantDraft] = useState('')
   const [showAdd, setShowAdd] = useState(false)
   const [addForm, setAddForm] = useState<AddForm>({ name: '', date: today, amount: '', category: 'Other', notes: '' })
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [merchantSuggestion, setMerchantSuggestion] = useState<{ merchant: string; category: string } | null>(null)
   const [applyDialog, setApplyDialog] = useState<{ merchant: string; category: string } | null>(null)
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
-  const [expandedDup, setExpandedDup] = useState<number | null>(null)
+  // Drawer: store selected row id; derive the full row object from current rows
+  const [selectedRowId, setSelectedRowId] = useState<number | null>(null)
   const qc = useQueryClient()
+
+  // Modal autofocus refs (Task 4)
+  const addNameInputRef = useRef<HTMLInputElement>(null)
+  const confirmDeleteCancelRef = useRef<HTMLButtonElement>(null)
+  const applyFutureOnlyRef = useRef<HTMLButtonElement>(null)
+
+  // Focus primary element when modals open
+  useEffect(() => { if (showAdd) setTimeout(() => addNameInputRef.current?.focus(), 50) }, [showAdd])
+  useEffect(() => { if (confirmDelete) setTimeout(() => confirmDeleteCancelRef.current?.focus(), 50) }, [confirmDelete])
+  useEffect(() => { if (applyDialog) setTimeout(() => applyFutureOnlyRef.current?.focus(), 50) }, [applyDialog])
+
+  // Escape-key to close modals (Task 4)
+  useEscapeKey(showAdd, () => setShowAdd(false))
+  useEscapeKey(!!confirmDelete, () => setConfirmDelete(null))
+  useEscapeKey(!!applyDialog, () => setApplyDialog(null))
 
   const { data: ledgerData, isLoading } = useQuery({
     queryKey: ['ledger', range, institution, account, search, categories, types, showTransfers, showDuplicates],
@@ -130,6 +156,19 @@ export default function Transactions() {
 
   const rows = ledgerData?.rows ?? []
   const summary = ledgerData?.summary
+
+  // Derive selected row from current rows — stays fresh after query invalidations
+  const selectedRow = selectedRowId !== null
+    ? rows.find((r) => r.id === selectedRowId) ?? null
+    : null
+
+  // Close drawer if the selected row disappears (e.g. deleted)
+  useEffect(() => {
+    if (selectedRowId !== null && !isLoading && rows.length > 0) {
+      const found = rows.find((r) => r.id === selectedRowId)
+      if (!found) setSelectedRowId(null)
+    }
+  }, [rows, selectedRowId, isLoading])
 
   // Client-side sort on top of the backend's date-desc ordering.
   const sortedRows = useMemo(() => {
@@ -239,7 +278,6 @@ export default function Transactions() {
     mutationFn: ({ id, otherId }: { id: string; otherId: string }) =>
       transactionsApi.dismissDuplicate(id, otherId),
     onSuccess: () => {
-      setExpandedDup(null)
       qc.invalidateQueries({ queryKey: ['ledger'] })
     },
   })
@@ -333,6 +371,8 @@ export default function Transactions() {
     mutationFn: (id: string) => transactionsApi.delete(id),
     onSuccess: () => {
       setConfirmDelete(null)
+      // Close drawer if the deleted row was selected
+      setSelectedRowId(null)
       qc.invalidateQueries({ queryKey: ['ledger'] })
       qc.invalidateQueries({ queryKey: ['summary'] })
       qc.invalidateQueries({ queryKey: ['monthly'] })
@@ -351,12 +391,6 @@ export default function Transactions() {
       category: addForm.category || undefined,
       notes: addForm.notes.trim() || undefined,
     })
-  }
-
-  const commitMerchant = (rawName: string) => {
-    const trimmed = merchantDraft.trim()
-    if (trimmed && trimmed !== rawName) renameMerchantMutation.mutate({ rawName, displayName: trimmed })
-    setEditingMerchant(null)
   }
 
   const handleBlur = (row: LedgerRow, field: 'category' | 'amount' | 'notes') => {
@@ -388,6 +422,25 @@ export default function Transactions() {
     )
   }
 
+  // "Show" filter popover label + highlight logic (Task 1)
+  const isDefaultShow = types.includes('debit') && types.includes('credit') && !showTransfers && !showDuplicates
+    && types.length === 2
+  const showLabel = (() => {
+    const parts: string[] = []
+    if (types.includes('debit')) parts.push('Spending')
+    if (types.includes('credit')) parts.push('Income')
+    if (showTransfers) parts.push('Transfers')
+    if (showDuplicates) parts.push('Duplicates')
+    if (parts.length === 0) return 'Show: Nothing'
+    if (isDefaultShow) return 'Show'
+    if (parts.length === 4) return 'Show: All'
+    if (parts.length <= 2) return `Show: ${parts.join(' + ')}`
+    return `Show: ${parts.length} types`
+  })()
+
+  // Table column count (for colSpan) — 8 base cols + optional group dot
+  const colCount = activeGroup ? 9 : 8
+
   return (
     <div className="space-y-4 fade-in" style={{ paddingBottom: 56 }}>
       {toast && (
@@ -396,7 +449,7 @@ export default function Transactions() {
             position: 'fixed', bottom: 80, left: '50%', transform: 'translateX(-50%)',
             background: 'var(--color-surface-raise)', border: '1px solid var(--color-border)',
             padding: '10px 16px', borderRadius: 8, fontSize: 13,
-            color: 'var(--color-text-primary)', zIndex: 60,
+            color: 'var(--color-text-primary)', zIndex: 70,
             boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
             display: 'flex', alignItems: 'center', gap: 8,
           }}
@@ -445,8 +498,10 @@ export default function Transactions() {
               <div>
                 <label style={{ fontSize: 12, color: 'var(--color-text-muted)', display: 'block', marginBottom: 4 }}>Name *</label>
                 <input
+                  ref={addNameInputRef}
                   type="text"
                   required
+                  autoFocus
                   placeholder="e.g. Coffee shop"
                   value={addForm.name}
                   onChange={(e) => setAddForm((f) => ({ ...f, name: e.target.value }))}
@@ -501,7 +556,7 @@ export default function Transactions() {
                 <button type="button" onClick={() => setShowAdd(false)} style={{ padding: '6px 14px', fontSize: 13, background: 'none', border: '1px solid var(--color-border)', borderRadius: 6, cursor: 'pointer', color: 'var(--color-text-secondary)' }}>
                   Cancel
                 </button>
-                <button type="submit" disabled={createMutation.isPending} style={{ padding: '6px 14px', fontSize: 13, background: 'var(--color-accent)', border: 'none', borderRadius: 6, cursor: 'pointer', color: '#fff', opacity: createMutation.isPending ? 0.6 : 1 }}>
+                <button type="submit" disabled={createMutation.isPending} style={{ padding: '6px 14px', fontSize: 13, background: 'var(--color-accent)', border: 'none', borderRadius: 6, cursor: 'pointer', color: 'var(--color-accent-contrast)', opacity: createMutation.isPending ? 0.6 : 1 }}>
                   {createMutation.isPending ? 'Adding…' : 'Add'}
                 </button>
               </div>
@@ -523,7 +578,7 @@ export default function Transactions() {
             <h2 style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: 8 }}>Delete transaction?</h2>
             <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginBottom: 20 }}>This cannot be undone.</p>
             <div className="flex gap-2 justify-end">
-              <button onClick={() => setConfirmDelete(null)} style={{ padding: '6px 14px', fontSize: 13, background: 'none', border: '1px solid var(--color-border)', borderRadius: 6, cursor: 'pointer', color: 'var(--color-text-secondary)' }}>
+              <button ref={confirmDeleteCancelRef} onClick={() => setConfirmDelete(null)} style={{ padding: '6px 14px', fontSize: 13, background: 'none', border: '1px solid var(--color-border)', borderRadius: 6, cursor: 'pointer', color: 'var(--color-text-secondary)' }}>
                 Cancel
               </button>
               <button
@@ -541,7 +596,7 @@ export default function Transactions() {
       <div>
         <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-text-primary)' }}>Transactions</h1>
         <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginTop: 2 }}>
-          Spending and income by default — use the filters to show transfers and duplicates
+          Spending and income by default — use the Show filter to include transfers and duplicates
         </p>
       </div>
 
@@ -619,44 +674,57 @@ export default function Transactions() {
           )}
         </div>
 
-        {/* Type filter — spending (debit) vs income (credit) */}
-        <div
-          className="flex items-center gap-1 rounded-lg p-1"
-          style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}
-        >
-          {[['debit', 'Spending'], ['credit', 'Income']].map(([t, label]) => (
-            <button
-              key={t}
-              onClick={() => toggleType(t)}
-              className="px-3 py-1 rounded-md text-xs font-medium transition-colors"
-              style={{
-                background: types.includes(t) ? 'var(--color-surface-raise)' : 'transparent',
-                color: types.includes(t) ? 'var(--color-text-primary)' : 'var(--color-text-muted)',
-                border: types.includes(t) ? '1px solid var(--color-border)' : '1px solid transparent',
-              }}
-            >
-              {label}
-            </button>
-          ))}
+        {/* Show filter — consolidates type toggle + transfers + duplicates (Task 1) */}
+        <div style={{ position: 'relative' }}>
+          <button
+            onClick={() => setShowMenuOpen((o) => !o)}
+            className="flex items-center gap-1.5"
+            title="Filter which transaction types are visible"
+            style={{
+              fontSize: 12, padding: '6px 10px', borderRadius: 6,
+              background: 'var(--color-surface)',
+              border: `1px solid ${!isDefaultShow ? 'var(--color-accent)' : 'var(--color-border)'}`,
+              color: 'var(--color-text-primary)', cursor: 'pointer',
+            }}
+          >
+            <Eye size={13} style={{ color: 'var(--color-text-muted)' }} />
+            {showLabel}
+            <ChevronDown size={13} style={{ color: 'var(--color-text-muted)' }} />
+          </button>
+          {showMenuOpen && (
+            <>
+              <div onClick={() => setShowMenuOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 30 }} />
+              <div
+                style={{
+                  position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 31,
+                  minWidth: 180, background: 'var(--color-surface)',
+                  border: '1px solid var(--color-border)', borderRadius: 8,
+                  padding: 8, boxShadow: '0 8px 28px rgba(0,0,0,0.32)',
+                }}
+              >
+                {([
+                  ['debit', 'Spending (debit)', types.includes('debit'), () => toggleType('debit')],
+                  ['credit', 'Income (credit)', types.includes('credit'), () => toggleType('credit')],
+                  ['transfers', 'Transfers', showTransfers, () => setShowTransfers((v) => !v)],
+                  ['duplicates', 'Duplicates', showDuplicates, () => setShowDuplicates((v) => !v)],
+                ] as [string, string, boolean, () => void][]).map(([key, label, checked, toggle]) => (
+                  <label
+                    key={key}
+                    className="flex items-center gap-2"
+                    style={{ padding: '6px 8px', borderRadius: 5, cursor: 'pointer', fontSize: 12, color: 'var(--color-text-primary)' }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={toggle}
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </>
+          )}
         </div>
-
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={showTransfers}
-            onChange={(e) => setShowTransfers(e.target.checked)}
-          />
-          <span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>Transfers</span>
-        </label>
-
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={showDuplicates}
-            onChange={(e) => setShowDuplicates(e.target.checked)}
-          />
-          <span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>Duplicates</span>
-        </label>
 
         <div className="flex items-center gap-2 ml-auto">
           {/* Rules — view / change / delete permanent merchant + category rules */}
@@ -778,7 +846,7 @@ export default function Transactions() {
           <button
             onClick={() => setShowAdd(true)}
             className="flex items-center gap-1.5"
-            style={{ padding: '6px 12px', fontSize: 13, background: 'var(--color-accent)', border: 'none', borderRadius: 6, cursor: 'pointer', color: '#fff', fontWeight: 500 }}
+            style={{ padding: '6px 12px', fontSize: 13, background: 'var(--color-accent)', border: 'none', borderRadius: 6, cursor: 'pointer', color: 'var(--color-accent-contrast)', fontWeight: 500 }}
           >
             <Plus size={14} /> Add
           </button>
@@ -800,56 +868,68 @@ export default function Transactions() {
                 {sortHead('Amount', 'amount', 'right')}
                 {sortHead('Institution', 'institution')}
                 <th>Status</th>
-                <th>Notes</th>
+                {/* saved/override indicator */}
                 <th style={{ width: 30 }}></th>
-                <th style={{ width: 28 }}></th>
                 {activeGroup && <th style={{ width: 28 }}></th>}
               </tr>
             </thead>
             <tbody>
               {isLoading ? (
-                <SkeletonRow cols={activeGroup ? 11 : 10} rows={12} />
+                <SkeletonRow cols={colCount} rows={12} />
               ) : sortedRows.length === 0 ? (
                 <tr>
-                  <td colSpan={activeGroup ? 11 : 10} style={{ textAlign: 'center', color: 'var(--color-text-muted)', padding: '32px 0' }}>
-                    No transactions found
+                  <td colSpan={colCount} style={{ textAlign: 'center', color: 'var(--color-text-muted)', padding: '32px 0' }}>
+                    {types.length === 0 && !showTransfers && !showDuplicates
+                      ? 'All transaction types are hidden — adjust the Show filter.'
+                      : (search || categories.length > 0)
+                        ? 'No transactions match your filters.'
+                        : 'No transactions found'}
                   </td>
                 </tr>
               ) : (
                 sortedRows.map((row) => {
-                  const isEditingAmount = editState[row.id]?.amount !== undefined
-                  const currentAmount = isEditingAmount
-                    ? editState[row.id].amount!
-                    : formatCurrency(row.amount)
                   const currentCategory = editState[row.id]?.category !== undefined
                     ? editState[row.id].category!
                     : row.category
-                  const currentNotes = editState[row.id]?.notes !== undefined
-                    ? editState[row.id].notes!
-                    : (row.notes ?? '')
 
                   const recurringKey = (row.merchant_normalized || row.name || '').toLowerCase().trim()
                   const recurringRule = recurringByKey.get(recurringKey)
                   const isRecurring = !!recurringRule || autoRecurringKeys.has(recurringKey)
 
-                  const rowStyle: React.CSSProperties = {}
+                  const isSelected = row.id === selectedRowId
+
+                  const rowStyle: React.CSSProperties = {
+                    cursor: 'pointer',
+                  }
                   if (row.is_duplicate) rowStyle.opacity = 0.5
                   if (row.is_transfer) rowStyle.color = 'var(--color-text-muted)'
 
+                  const handleRowClick = (e: React.MouseEvent<HTMLTableRowElement>) => {
+                    // Ignore clicks on interactive elements
+                    if ((e.target as HTMLElement).closest('button, input, select, a, label')) return
+                    setSelectedRowId(row.id)
+                  }
+
                   return (
-                    <React.Fragment key={row.id}>
-                    <tr style={rowStyle}>
-                      <td style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }}>
+                    <tr
+                      key={row.id}
+                      style={rowStyle}
+                      onClick={handleRowClick}
+                    >
+                      <td style={{
+                        fontFamily: 'monospace', fontSize: 12, color: 'var(--color-text-muted)', whiteSpace: 'nowrap',
+                        background: isSelected ? 'var(--color-accent-soft)' : undefined,
+                      }}>
                         {formatDate(row.date)}
                       </td>
-                      <td>
+                      <td style={{ background: isSelected ? 'var(--color-accent-soft)' : undefined }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 4, maxWidth: 170 }}>
                           <span style={{ fontSize: 12, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {row.name}
                           </span>
                           {row.is_potential_duplicate && (
                             <button
-                              onClick={() => setExpandedDup(expandedDup === row.id ? null : row.id)}
+                              onClick={(e) => { e.stopPropagation(); setSelectedRowId(row.id) }}
                               title="Possible duplicate — click to review"
                               style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex', flexShrink: 0 }}
                             >
@@ -858,41 +938,25 @@ export default function Transactions() {
                           )}
                         </div>
                       </td>
-                      <td className="editable-cell">
-                        {editingMerchant === row.id ? (
-                          <input
-                            type="text"
-                            value={merchantDraft}
-                            autoFocus
-                            onChange={(e) => setMerchantDraft(e.target.value)}
-                            onBlur={() => commitMerchant(row.merchant_normalized || '')}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') commitMerchant(row.merchant_normalized || '')
-                              if (e.key === 'Escape') setEditingMerchant(null)
-                            }}
-                            style={{ fontSize: 12, width: 120 }}
-                          />
-                        ) : (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, maxWidth: 145 }}>
+                      <td style={{ background: isSelected ? 'var(--color-accent-soft)' : undefined }} className="editable-cell">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, maxWidth: 145 }}>
+                          <span
+                            title={categoryOverrides[row.merchant_normalized] ? `Rule: always ${categoryOverrides[row.merchant_normalized]}` : undefined}
+                            style={{ fontSize: 12, color: 'var(--color-text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}
+                          >
+                            {row.merchant_normalized || '—'}
+                          </span>
+                          {categoryOverrides[row.merchant_normalized] && (
                             <span
-                              onDoubleClick={() => { setMerchantDraft(row.merchant_normalized || ''); setEditingMerchant(row.id) }}
-                              title={categoryOverrides[row.merchant_normalized] ? `Rule: always ${categoryOverrides[row.merchant_normalized]} · double-click to rename` : 'Double-click to rename'}
-                              style={{ fontSize: 12, color: 'var(--color-text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'text', flex: 1 }}
+                              title={`Auto-categorized as "${categoryOverrides[row.merchant_normalized]}" — rule applies to all transactions from this merchant`}
+                              style={{ display: 'flex', flexShrink: 0 }}
                             >
-                              {row.merchant_normalized || '—'}
+                              <Tag size={11} style={{ color: getCategoryColor(categoryOverrides[row.merchant_normalized]) }} />
                             </span>
-                            {categoryOverrides[row.merchant_normalized] && (
-                              <span
-                                title={`Auto-categorized as "${categoryOverrides[row.merchant_normalized]}" — rule applies to all transactions from this merchant`}
-                                style={{ display: 'flex', flexShrink: 0 }}
-                              >
-                                <Tag size={11} style={{ color: getCategoryColor(categoryOverrides[row.merchant_normalized]) }} />
-                              </span>
-                            )}
-                          </div>
-                        )}
+                          )}
+                        </div>
                       </td>
-                      <td className="editable-cell">
+                      <td style={{ background: isSelected ? 'var(--color-accent-soft)' : undefined }} className="editable-cell">
                         <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                           <div style={{ width: 7, height: 7, borderRadius: '50%', background: getCategoryColor(currentCategory), flexShrink: 0 }} />
                           <select
@@ -916,41 +980,70 @@ export default function Transactions() {
                           </select>
                         </div>
                       </td>
-                      <td style={{ textAlign: 'right' }} className="editable-cell">
-                        <input
-                          type="text"
-                          inputMode="decimal"
-                          value={currentAmount}
-                          onFocus={() => {
-                            if (!isEditingAmount) setEdit(row.id, 'amount', row.amount.toString())
-                          }}
-                          onChange={(e) => setEdit(row.id, 'amount', e.target.value)}
-                          onBlur={() => {
-                            handleBlur(row, 'amount')
-                            // Revert to formatted display after blur
-                            setEditState((s) => {
-                              const next = { ...s }
-                              if (next[row.id]) {
-                                const { amount: _a, ...rest } = next[row.id]
-                                if (Object.keys(rest).length === 0) delete next[row.id]
-                                else next[row.id] = rest
+                      <td style={{ textAlign: 'right', background: isSelected ? 'var(--color-accent-soft)' : undefined }} className="editable-cell">
+                        {editState[row.id]?.amount !== undefined ? (
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            autoFocus
+                            value={editState[row.id]?.amount ?? ''}
+                            onChange={(e) => setEdit(row.id, 'amount', e.target.value)}
+                            onBlur={() => {
+                              handleBlur(row, 'amount')
+                              setEditState((s) => {
+                                const next = { ...s }
+                                if (next[row.id]) {
+                                  const { amount: _a, ...rest } = next[row.id]
+                                  if (Object.keys(rest).length === 0) delete next[row.id]
+                                  else next[row.id] = rest
+                                }
+                                return next
+                              })
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                              if (e.key === 'Escape') {
+                                setEditState((s) => {
+                                  const next = { ...s }
+                                  if (next[row.id]) {
+                                    const { amount: _a, ...rest } = next[row.id]
+                                    if (Object.keys(rest).length === 0) delete next[row.id]
+                                    else next[row.id] = rest
+                                  }
+                                  return next
+                                })
                               }
-                              return next
-                            })
-                          }}
-                          style={{
-                            fontFamily: 'monospace',
-                            fontSize: 12,
-                            textAlign: 'right',
-                            width: 90,
-                            color: row.amount < 0 ? 'var(--color-positive)' : 'var(--color-text-primary)',
-                          }}
-                        />
+                            }}
+                            style={{
+                              fontFamily: 'monospace',
+                              fontSize: 12,
+                              textAlign: 'right',
+                              width: 90,
+                              color: row.amount < 0 ? 'var(--color-positive)' : 'var(--color-text-primary)',
+                            }}
+                          />
+                        ) : (
+                          <span
+                            onClick={() => setEdit(row.id, 'amount', row.amount.toString())}
+                            title="Click to edit amount"
+                            style={{
+                              fontFamily: 'monospace',
+                              fontSize: 12,
+                              cursor: 'text',
+                              color: row.amount < 0 ? 'var(--color-positive)' : 'var(--color-text-primary)',
+                              display: 'inline-block',
+                              minWidth: 60,
+                              textAlign: 'right',
+                            }}
+                          >
+                            {formatCurrency(row.amount)}
+                          </span>
+                        )}
                       </td>
-                      <td style={{ fontSize: 12, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }}>
+                      <td style={{ fontSize: 12, color: 'var(--color-text-muted)', whiteSpace: 'nowrap', background: isSelected ? 'var(--color-accent-soft)' : undefined }}>
                         {row.institution}
                       </td>
-                      <td>
+                      <td style={{ background: isSelected ? 'var(--color-accent-soft)' : undefined }}>
                         <div className="flex items-center gap-1">
                           {row.pending && (
                             <span
@@ -980,7 +1073,7 @@ export default function Transactions() {
                             <span
                               className="flex items-center gap-1 px-1.5 py-0.5 rounded"
                               title="Marked as recurring"
-                              style={{ background: 'rgba(200, 255, 0, 0.13)', color: 'var(--color-accent)', fontSize: 10 }}
+                              style={{ background: 'var(--color-accent-soft)', color: 'var(--color-accent-text)', fontSize: 10 }}
                             >
                               <Repeat size={9} />
                               recurring
@@ -1006,17 +1099,8 @@ export default function Transactions() {
                           )}
                         </div>
                       </td>
-                      <td className="editable-cell">
-                        <input
-                          type="text"
-                          value={currentNotes}
-                          placeholder="Add note…"
-                          onChange={(e) => setEdit(row.id, 'notes', e.target.value)}
-                          onBlur={() => handleBlur(row, 'notes')}
-                          style={{ fontSize: 12, minWidth: 110 }}
-                        />
-                      </td>
-                      <td>
+                      {/* Saved / override indicator */}
+                      <td style={{ background: isSelected ? 'var(--color-accent-soft)' : undefined }}>
                         {saved[row.id] ? (
                           <Check size={13} style={{ color: 'var(--color-positive)' }} />
                         ) : row.has_user_override ? (
@@ -1025,43 +1109,11 @@ export default function Transactions() {
                           </span>
                         ) : null}
                       </td>
-                      <td>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                          <button
-                            onClick={() =>
-                              recurringRule
-                                ? unmarkRecurringMutation.mutate(recurringRule.id)
-                                : markRecurringMutation.mutate(String(row.id))
-                            }
-                            disabled={markRecurringMutation.isPending || unmarkRecurringMutation.isPending}
-                            title={
-                              recurringRule
-                                ? 'Recurring — click to remove'
-                                : isRecurring
-                                  ? 'Auto-detected as recurring — click to pin a rule'
-                                  : 'Mark as recurring'
-                            }
-                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: isRecurring ? 'var(--color-accent)' : 'var(--color-text-muted)', padding: 2, opacity: recurringRule ? 1 : isRecurring ? 0.7 : 0.4, transition: 'opacity 0.15s, color 0.15s', display: 'flex', alignItems: 'center' }}
-                            onMouseEnter={(e) => { if (!recurringRule) e.currentTarget.style.opacity = '1' }}
-                            onMouseLeave={(e) => { if (!recurringRule) e.currentTarget.style.opacity = isRecurring ? '0.7' : '0.4' }}
-                          >
-                            <Repeat size={12} />
-                          </button>
-                          <button
-                            onClick={() => setConfirmDelete(String(row.id))}
-                            title="Delete transaction"
-                            className="delete-row-btn"
-                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-muted)', padding: 2, opacity: 0, transition: 'opacity 0.15s', display: 'flex', alignItems: 'center' }}
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        </div>
-                      </td>
                       {activeGroup && (() => {
                         const txId = String(row.id)
                         const inGroup = groupTxIds.has(txId)
                         return (
-                          <td>
+                          <td style={{ background: isSelected ? 'var(--color-accent-soft)' : undefined }}>
                             <button
                               onClick={() => tagMutation.mutate({ txId, inGroup })}
                               title={inGroup ? `Remove from ${activeGroup.name}` : `Add to ${activeGroup.name}`}
@@ -1080,43 +1132,6 @@ export default function Transactions() {
                         )
                       })()}
                     </tr>
-                    {expandedDup === row.id && row.is_potential_duplicate && (() => {
-                      const dupOf = row.potential_dup_of
-                        ? (typeof row.potential_dup_of === 'string' ? JSON.parse(row.potential_dup_of) : row.potential_dup_of)
-                        : null
-                      return (
-                        <tr>
-                          <td colSpan={activeGroup ? 11 : 10} style={{ padding: 0 }}>
-                            <div style={{ background: 'rgba(232,193,122,0.07)', borderTop: '1px solid rgba(232,193,122,0.25)', borderBottom: '1px solid rgba(232,193,122,0.25)', padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 16 }}>
-                              <AlertTriangle size={13} style={{ color: '#e8c17a', flexShrink: 0 }} />
-                              <div style={{ flex: 1, fontSize: 12, color: 'var(--color-text-secondary)' }}>
-                                <span style={{ fontWeight: 600, color: 'var(--color-text-primary)' }}>Possible duplicate</span>
-                                {dupOf && (
-                                  <span> — looks like <span style={{ color: 'var(--color-text-primary)' }}>{dupOf.name}</span> on {dupOf.date} for {formatCurrency(dupOf.amount)}</span>
-                                )}
-                              </div>
-                              <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                                <button
-                                  onClick={() => deleteMutation.mutate(String(row.id))}
-                                  disabled={deleteMutation.isPending}
-                                  style={{ fontSize: 11, padding: '3px 10px', borderRadius: 5, background: 'var(--color-negative)', border: 'none', color: '#fff', cursor: 'pointer', fontWeight: 600 }}
-                                >
-                                  Delete this one
-                                </button>
-                                <button
-                                  onClick={() => dupOf && dismissDupMutation.mutate({ id: String(row.id), otherId: dupOf.id })}
-                                  disabled={dismissDupMutation.isPending}
-                                  style={{ fontSize: 11, padding: '3px 10px', borderRadius: 5, background: 'var(--color-surface-raise)', border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)', cursor: 'pointer' }}
-                                >
-                                  Keep both
-                                </button>
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                      )
-                    })()}
-                    </React.Fragment>
                   )
                 })
               )}
@@ -1126,16 +1141,21 @@ export default function Transactions() {
 
       </div>
 
-      {/* Merchant category suggestion toast */}
+      {/* Merchant category suggestion toast — bottom-center, stacked above main toast (Task 5b) */}
       {merchantSuggestion && (
         <div
           style={{
-            position: 'fixed', bottom: 68, right: rhsWidth + 24, zIndex: 40,
+            position: 'fixed',
+            bottom: toast ? 140 : 80,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 40,
             background: 'var(--color-surface)',
             border: '1px solid var(--color-border)',
             borderRadius: 10, padding: '12px 16px',
             boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
-            maxWidth: 320,
+            maxWidth: 340,
+            width: 'max-content',
           }}
         >
           <div className="flex items-start gap-2 mb-3">
@@ -1155,7 +1175,7 @@ export default function Transactions() {
             <button
               disabled={saveMerchantCategoryMutation.isPending}
               onClick={() => saveMerchantCategoryMutation.mutate(merchantSuggestion)}
-              style={{ fontSize: 12, padding: '4px 10px', borderRadius: 5, background: 'var(--color-accent)', border: 'none', color: '#000', fontWeight: 600, cursor: 'pointer', opacity: saveMerchantCategoryMutation.isPending ? 0.6 : 1 }}
+              style={{ fontSize: 12, padding: '4px 10px', borderRadius: 5, background: 'var(--color-accent)', border: 'none', color: 'var(--color-accent-contrast)', fontWeight: 600, cursor: 'pointer', opacity: saveMerchantCategoryMutation.isPending ? 0.6 : 1 }}
             >
               Set rule
             </button>
@@ -1187,6 +1207,7 @@ export default function Transactions() {
             </p>
             <div className="flex gap-2 justify-end">
               <button
+                ref={applyFutureOnlyRef}
                 onClick={() => setApplyDialog(null)}
                 style={{ fontSize: 13, padding: '6px 14px', borderRadius: 6, background: 'var(--color-surface-raise)', border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)', cursor: 'pointer' }}
               >
@@ -1195,7 +1216,7 @@ export default function Transactions() {
               <button
                 disabled={applyHistoricalMutation.isPending}
                 onClick={() => applyHistoricalMutation.mutate(applyDialog)}
-                style={{ fontSize: 13, padding: '6px 14px', borderRadius: 6, background: 'var(--color-accent)', color: '#000', fontWeight: 600, cursor: 'pointer', border: 'none', opacity: applyHistoricalMutation.isPending ? 0.6 : 1 }}
+                style={{ fontSize: 13, padding: '6px 14px', borderRadius: 6, background: 'var(--color-accent)', color: 'var(--color-accent-contrast)', fontWeight: 600, cursor: 'pointer', border: 'none', opacity: applyHistoricalMutation.isPending ? 0.6 : 1 }}
               >
                 {applyHistoricalMutation.isPending ? 'Applying…' : 'Apply to all past'}
               </button>
@@ -1203,6 +1224,35 @@ export default function Transactions() {
           </div>
         </div>
       )}
+
+      {/* Transaction detail drawer */}
+      {selectedRow && (() => {
+        const recurringKey = (selectedRow.merchant_normalized || selectedRow.name || '').toLowerCase().trim()
+        const recurringRule = recurringByKey.get(recurringKey)
+        const isRecurring = !!recurringRule || autoRecurringKeys.has(recurringKey)
+        return (
+          <TransactionDrawer
+            row={selectedRow}
+            onClose={() => setSelectedRowId(null)}
+            userCategories={userCategories}
+            categoryOverrides={categoryOverrides}
+            recurringRule={recurringRule}
+            isRecurring={isRecurring}
+            isSaved={!!saved[selectedRow.id]}
+            onPatch={(id, data) => patchMutation.mutate({ id, data })}
+            onRenameMerchant={(rawName, displayName) => renameMerchantMutation.mutate({ rawName, displayName })}
+            onMarkRecurring={(txId) => markRecurringMutation.mutate(txId)}
+            onUnmarkRecurring={(ruleId) => unmarkRecurringMutation.mutate(ruleId)}
+            onDismissDuplicate={(id, otherId) => dismissDupMutation.mutate({ id, otherId })}
+            onDelete={(id) => setConfirmDelete(id)}
+            isPatchPending={patchMutation.isPending}
+            isMarkRecurringPending={markRecurringMutation.isPending}
+            isUnmarkRecurringPending={unmarkRecurringMutation.isPending}
+            isDismissDupPending={dismissDupMutation.isPending}
+            isDeletePending={deleteMutation.isPending}
+          />
+        )
+      })()}
 
       {summary && (
         <div

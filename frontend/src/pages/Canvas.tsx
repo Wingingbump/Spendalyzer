@@ -773,7 +773,7 @@ function WidgetModal({
               )}
 
               <div className="flex gap-2 pt-2">
-                <button onClick={handleSave} className="flex-1 rounded-lg font-medium" style={{ background: 'var(--color-accent)', color: '#fff', padding: '8px 0', fontSize: 13 }}>
+                <button onClick={handleSave} className="flex-1 rounded-lg font-medium" style={{ background: 'var(--color-accent)', color: 'var(--color-accent-contrast)', padding: '8px 0', fontSize: 13 }}>
                   {isEdit ? 'Update' : 'Add to canvas'}
                 </button>
                 <button onClick={onClose} className="rounded-lg" style={{ background: 'var(--color-surface-raise)', color: 'var(--color-text-muted)', padding: '8px 16px', fontSize: 13, border: '1px solid var(--color-border)' }}>
@@ -1096,7 +1096,7 @@ export default function Canvas() {
             onClick={() => setModal('add')}
             disabled={activeId === null}
             className="flex items-center gap-2 rounded-lg font-medium"
-            style={{ background: 'var(--color-accent)', color: '#fff', padding: '7px 14px', fontSize: 13, opacity: activeId === null ? 0.5 : 1 }}
+            style={{ background: 'var(--color-accent)', color: 'var(--color-accent-contrast)', padding: '7px 14px', fontSize: 13, opacity: activeId === null ? 0.5 : 1 }}
           >
             <Plus size={14} />
             Add widget
@@ -1119,7 +1119,7 @@ export default function Canvas() {
           <button
             onClick={() => createMutation.mutate('My Canvas')}
             className="flex items-center gap-2 rounded-lg font-medium"
-            style={{ background: 'var(--color-accent)', color: '#fff', padding: '8px 16px', fontSize: 13 }}
+            style={{ background: 'var(--color-accent)', color: 'var(--color-accent-contrast)', padding: '8px 16px', fontSize: 13 }}
           >
             <Plus size={14} /> Create canvas
           </button>
@@ -1131,7 +1131,7 @@ export default function Canvas() {
           <BarChart2 size={32} style={{ marginBottom: 12, opacity: 0.4 }} />
           <p style={{ fontSize: 14, fontWeight: 500, marginBottom: 4 }}>This canvas is empty</p>
           <p style={{ fontSize: 12, marginBottom: 16 }}>Add widgets to start building your custom view</p>
-          <button onClick={() => setModal('add')} className="flex items-center gap-2 rounded-lg font-medium" style={{ background: 'var(--color-accent)', color: '#fff', padding: '8px 16px', fontSize: 13 }}>
+          <button onClick={() => setModal('add')} className="flex items-center gap-2 rounded-lg font-medium" style={{ background: 'var(--color-accent)', color: 'var(--color-accent-contrast)', padding: '8px 16px', fontSize: 13 }}>
             <Plus size={14} /> Add first widget
           </button>
         </div>
