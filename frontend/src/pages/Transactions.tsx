@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Search, Check, Plus, Trash2, X, Tag, Download, AlertTriangle, Repeat, ChevronUp, ChevronDown, ChevronsUpDown, Pencil, SlidersHorizontal, Eye } from 'lucide-react'
+import { Search, Check, Plus, Trash2, X, Tag, Download, AlertTriangle, Repeat, ChevronUp, ChevronDown, ChevronsUpDown, Pencil, SlidersHorizontal, Eye, EyeOff } from 'lucide-react'
 import { ledgerApi, transactionsApi, workspaceApi, merchantsApi, categoriesApi } from '../lib/api'
 import type { LedgerRow, RecurringRule } from '../lib/api'
 import { useFilters } from '../context/FilterContext'
@@ -157,6 +157,20 @@ export default function Transactions() {
   const rows = ledgerData?.rows ?? []
   const summary = ledgerData?.summary
 
+  // Distinct raw descriptors grouped under each displayed merchant name. Drives the
+  // rename scope choice: when a name covers >1 descriptor, the drawer offers to
+  // rename the whole group or split out just the current descriptor.
+  const descriptorsByMerchant = useMemo(() => {
+    const m = new Map<string, Set<string>>()
+    for (const r of rows) {
+      const key = r.merchant_normalized || ''
+      if (!key) continue
+      if (!m.has(key)) m.set(key, new Set())
+      m.get(key)!.add(r.name)
+    }
+    return m
+  }, [rows])
+
   // Derive selected row from current rows — stays fresh after query invalidations
   const selectedRow = selectedRowId !== null
     ? rows.find((r) => r.id === selectedRowId) ?? null
@@ -301,6 +315,23 @@ export default function Transactions() {
 
   const unmarkRecurringMutation = useMutation({
     mutationFn: (ruleId: number) => workspaceApi.deleteRecurringRule(ruleId),
+    onSuccess: () => {
+      setToast({ message: 'Removed from recurring', type: 'success' })
+      setTimeout(() => setToast(null), 2500)
+      qc.invalidateQueries({ queryKey: ['recurring'] })
+      qc.invalidateQueries({ queryKey: ['recurring-rules'] })
+      qc.invalidateQueries({ queryKey: ['tracker'] })
+    },
+    onError: () => {
+      setToast({ message: 'Could not remove recurring', type: 'error' })
+      setTimeout(() => setToast(null), 2500)
+    },
+  })
+
+  // Auto-detected items have no rule to delete — suppress the merchant instead so
+  // detection stops re-tagging it.
+  const suppressRecurringMutation = useMutation({
+    mutationFn: (transaction_id: string) => workspaceApi.suppressRecurringFromTransaction(transaction_id),
     onSuccess: () => {
       setToast({ message: 'Removed from recurring', type: 'success' })
       setTimeout(() => setToast(null), 2500)
@@ -1069,6 +1100,16 @@ export default function Transactions() {
                               dup
                             </span>
                           )}
+                          {row.is_excluded && (
+                            <span
+                              className="flex items-center gap-1 px-1.5 py-0.5 rounded"
+                              title="Excluded from Overview reports"
+                              style={{ background: 'var(--color-surface-raise)', color: 'var(--color-text-muted)', fontSize: 10, border: '1px solid var(--color-border)' }}
+                            >
+                              <EyeOff size={9} />
+                              excluded
+                            </span>
+                          )}
                           {isRecurring && (
                             <span
                               className="flex items-center gap-1 px-1.5 py-0.5 rounded"
@@ -1240,14 +1281,25 @@ export default function Transactions() {
             isRecurring={isRecurring}
             isSaved={!!saved[selectedRow.id]}
             onPatch={(id, data) => patchMutation.mutate({ id, data })}
-            onRenameMerchant={(rawName, displayName) => renameMerchantMutation.mutate({ rawName, displayName })}
+            onRenameMerchant={(displayName, scope) => {
+              // 'group' keys the override on the merchant name (renames every
+              // variant); 'descriptor' keys it on this row's raw descriptor so only
+              // matching rows change — that's how a merged merchant gets split.
+              const rawName = scope === 'descriptor'
+                ? selectedRow.name
+                : (selectedRow.merchant_normalized || selectedRow.name)
+              renameMerchantMutation.mutate({ rawName, displayName })
+            }}
+            merchantDescriptorCount={descriptorsByMerchant.get(selectedRow.merchant_normalized || '')?.size ?? 1}
             onMarkRecurring={(txId) => markRecurringMutation.mutate(txId)}
             onUnmarkRecurring={(ruleId) => unmarkRecurringMutation.mutate(ruleId)}
+            onSuppressRecurring={(txId) => suppressRecurringMutation.mutate(txId)}
             onDismissDuplicate={(id, otherId) => dismissDupMutation.mutate({ id, otherId })}
             onDelete={(id) => setConfirmDelete(id)}
             isPatchPending={patchMutation.isPending}
             isMarkRecurringPending={markRecurringMutation.isPending}
             isUnmarkRecurringPending={unmarkRecurringMutation.isPending}
+            isSuppressRecurringPending={suppressRecurringMutation.isPending}
             isDismissDupPending={dismissDupMutation.isPending}
             isDeletePending={deleteMutation.isPending}
           />

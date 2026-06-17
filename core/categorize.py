@@ -32,7 +32,9 @@ def apply_categories(df):
     from core.merchant_normalize import (
         normalize_merchant, looks_low_confidence, ai_clean_merchant,
     )
-    from core.merchant_cluster import build_canonical_map, bucket_key, SIMILARITY_THRESHOLD
+    from core.merchant_cluster import (
+        build_canonical_map, bucket_key, SIMILARITY_THRESHOLD, _GENERIC_TOKENS,
+    )
 
     df = df.copy()
     if "name" not in df.columns or df.empty:
@@ -51,10 +53,17 @@ def apply_categories(df):
     for raw in uniq:
         stem = normalize_merchant(raw)
         bkey = bucket_key(stem)
+        # A bucket keyed on a generic bank-label word ("payment", "withdrawal", …)
+        # lumps every distinct payee together (e.g. "Payment To Airgsm" and "Payment
+        # To Apple Services" both bucket as "payment"). The shared dictionary stores
+        # one canonical per bucket, so consulting it here would force them to the same
+        # name. Skip the dictionary for these and rely on per-corpus clustering, which
+        # keeps them apart via its own generic-token guard.
+        generic_bucket = bkey in _GENERIC_TOKENS
 
         # 1. Shared dictionary wins when the stem clearly matches a known brand.
         cand = None
-        if bkey in brand_dict and fuzz.token_set_ratio(
+        if not generic_bucket and bkey in brand_dict and fuzz.token_set_ratio(
             stem.lower(), brand_dict[bkey].lower()
         ) >= SIMILARITY_THRESHOLD:
             cand = brand_dict[bkey]
@@ -78,7 +87,7 @@ def apply_categories(df):
         if norm_cache.get(raw) != cand:
             save_normalization_entry(raw, cand)
             norm_cache[raw] = cand
-        if bkey and brand_dict.get(bkey) != cand:
+        if bkey and not generic_bucket and brand_dict.get(bkey) != cand:
             dict_updates[bkey] = cand
 
     upsert_merchant_dictionary(dict_updates)

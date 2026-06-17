@@ -78,6 +78,7 @@ def _build_df(user_id: int) -> pd.DataFrame:
             "has_user_override": pd.Series(dtype=bool),
             "is_reimbursement": pd.Series(dtype=bool),
             "needs_review": pd.Series(dtype=bool),
+            "is_excluded": pd.Series(dtype=bool),
         })
         return df
     df = pd.DataFrame(rows)
@@ -88,6 +89,8 @@ def _build_df(user_id: int) -> pd.DataFrame:
 
     # Protect only real user overrides (rows with an entry in the overrides table)
     df["has_user_override"] = df["has_user_override"].astype(bool)
+    if "is_excluded" in df.columns:
+        df["is_excluded"] = df["is_excluded"].astype(bool)
     df["override_category"] = df["category"].where(df["has_user_override"])
 
     df = apply_categories(df)
@@ -117,12 +120,22 @@ def _build_df(user_id: int) -> pd.DataFrame:
     df = flag_reimbursements(df)
     df = categorize_reimbursements(df, user_id)
 
-    # Apply per-user merchant display name overrides (keyed by AI-normalized name)
+    # Apply per-user merchant display-name overrides. Two passes, in precedence
+    # order, both reading the same flat {key -> display} map:
+    #   1. Group-level — key is the clustered merchant name. Renames every raw
+    #      descriptor that resolves to that name (e.g. all "Starbucks" variants).
+    #   2. Descriptor-level — key is the exact raw transaction descriptor. Applied
+    #      last so it WINS, letting a single descriptor be split out of a group it
+    #      was wrongly merged into (two payees that normalized to the same name).
     overrides = get_merchant_overrides(user_id)
     if overrides:
         df["merchant_normalized"] = df["merchant_normalized"].map(
             lambda v: overrides.get(v, v)
         )
+        df["merchant_normalized"] = [
+            overrides.get(name, norm)
+            for name, norm in zip(df["name"], df["merchant_normalized"])
+        ]
 
     with _df_cache_lock:
         _df_cache[user_id] = df
@@ -160,6 +173,14 @@ def _reimbursement_mask(df: pd.DataFrame) -> pd.Series:
     return pd.Series(False, index=df.index)
 
 
+def _excluded_mask(df: pd.DataFrame) -> pd.Series:
+    """Rows the user flagged 'exclude from reports' — dropped from all spending/
+    income analytics (the monthly Overview) but kept in the raw ledger list."""
+    if "is_excluded" in df.columns:
+        return df["is_excluded"].fillna(False)
+    return pd.Series(False, index=df.index)
+
+
 def get_spending(df: pd.DataFrame) -> pd.DataFrame:
     """Clean debits PLUS reimbursements. Reimbursements are money-back (negative
     amounts) that net against their category. Transfers, duplicates, and true
@@ -171,6 +192,7 @@ def get_spending(df: pd.DataFrame) -> pd.DataFrame:
         (~df["is_transfer"].fillna(False))
         & (~df["is_duplicate"].fillna(False))
         & ((df["type"] == "debit") | reimb)
+        & (~_excluded_mask(df))
     )
     return df[mask].copy()
 
@@ -180,7 +202,8 @@ def get_credits(df: pd.DataFrame) -> pd.DataFrame:
     return df[
         (df["type"] == "credit") &
         (~df["is_transfer"].fillna(False)) &
-        (~df["is_duplicate"].fillna(False))
+        (~df["is_duplicate"].fillna(False)) &
+        (~_excluded_mask(df))
     ].copy()
 
 
@@ -195,6 +218,7 @@ def get_income(df: pd.DataFrame) -> pd.DataFrame:
         & (~df["is_transfer"].fillna(False))
         & (~df["is_duplicate"].fillna(False))
         & (~reimb)
+        & (~_excluded_mask(df))
     )
     return df[mask].copy()
 
@@ -203,7 +227,7 @@ def get_reimbursements(df: pd.DataFrame) -> pd.DataFrame:
     """Clean reimbursements only (money back for a spend)."""
     if df.empty:
         return df.copy()
-    return df[_reimbursement_mask(df)].copy()
+    return df[_reimbursement_mask(df) & (~_excluded_mask(df))].copy()
 
 
 # ── Totals ─────────────────────────────────────────────────────────────────────

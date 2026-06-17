@@ -29,6 +29,7 @@ class OverrideBody(BaseModel):
     category: Optional[str] = None
     amount: Optional[float] = None
     notes: Optional[str] = None
+    excluded: Optional[bool] = None
 
 
 class CreateTransactionBody(BaseModel):
@@ -109,6 +110,7 @@ def patch_transaction(
         category=body.category,
         amount=body.amount,
         notes=body.notes,
+        excluded=body.excluded,
     )
     ins.invalidate_user_cache(current_user["id"])
     return {"ok": True}

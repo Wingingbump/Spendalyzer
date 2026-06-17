@@ -141,6 +141,7 @@ export interface LedgerRow {
   is_duplicate?: boolean
   is_reimbursement?: boolean
   needs_review?: boolean
+  is_excluded?: boolean
   is_potential_duplicate?: boolean
   potential_dup_of?: PotentialDupOf | null
 }
@@ -313,7 +314,7 @@ export const transactionsApi = {
   list: (params?: FilterParams & { search?: string }) =>
     api.get<Transaction[]>('/transactions', { params: cleanParams(params) }).then((r) => r.data),
 
-  patch: (id: number, data: { category?: string; amount?: number; notes?: string }) =>
+  patch: (id: number, data: { category?: string; amount?: number; notes?: string; excluded?: boolean }) =>
     api.patch<{ ok: boolean }>(`/transactions/${id}`, data).then((r) => r.data),
 
   create: (data: { name: string; date: string; amount: number; category?: string; notes?: string }) =>
@@ -624,6 +625,13 @@ export const workspaceApi = {
     api.post<{ id: number; merchant_key: string; amount_center: number }>(
       '/workspace/recurring/rules/from-transaction',
       { transaction_id, label, frequency_hint },
+    ).then((r) => r.data),
+
+  // Mark a merchant as NOT recurring — suppresses auto-detection for it.
+  suppressRecurringFromTransaction: (transaction_id: string) =>
+    api.post<{ id: number; merchant_key: string; suppressed: boolean }>(
+      '/workspace/recurring/rules/suppress-from-transaction',
+      { transaction_id },
     ).then((r) => r.data),
 
   updateRecurringRule: (

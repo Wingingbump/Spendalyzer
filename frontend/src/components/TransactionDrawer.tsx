@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { X, Pencil, Tag, Repeat, AlertTriangle, Trash2, Check } from 'lucide-react'
+import { X, Pencil, Tag, Repeat, AlertTriangle, Trash2, Check, EyeOff } from 'lucide-react'
 import type { LedgerRow, RecurringRule } from '../lib/api'
 import { formatDate, formatCurrency, getCategoryColor } from '../lib/utils'
 
@@ -12,15 +12,22 @@ interface TransactionDrawerProps {
   isRecurring: boolean
   isSaved: boolean
   // Mutation handlers — keep mutations in Transactions.tsx
-  onPatch: (id: number, data: { category?: string; amount?: number; notes?: string }) => void
-  onRenameMerchant: (rawName: string, displayName: string) => void
+  onPatch: (id: number, data: { category?: string; amount?: number; notes?: string; excluded?: boolean }) => void
+  // scope 'group' renames every transaction under this merchant name; 'descriptor'
+  // renames only rows with this exact raw descriptor (splits a merged merchant).
+  onRenameMerchant: (displayName: string, scope: 'group' | 'descriptor') => void
+  // How many distinct raw descriptors currently share this row's merchant name.
+  // >1 means renaming is ambiguous, so we offer a scope choice.
+  merchantDescriptorCount: number
   onMarkRecurring: (transactionId: string) => void
   onUnmarkRecurring: (ruleId: number) => void
+  onSuppressRecurring: (transactionId: string) => void
   onDismissDuplicate: (id: string, otherId: string) => void
   onDelete: (id: string) => void
   isPatchPending: boolean
   isMarkRecurringPending: boolean
   isUnmarkRecurringPending: boolean
+  isSuppressRecurringPending: boolean
   isDismissDupPending: boolean
   isDeletePending: boolean
 }
@@ -35,13 +42,16 @@ export default function TransactionDrawer({
   isSaved,
   onPatch,
   onRenameMerchant,
+  merchantDescriptorCount,
   onMarkRecurring,
   onUnmarkRecurring,
+  onSuppressRecurring,
   onDismissDuplicate,
   onDelete,
   isPatchPending,
   isMarkRecurringPending,
   isUnmarkRecurringPending,
+  isSuppressRecurringPending,
   isDismissDupPending,
   isDeletePending,
 }: TransactionDrawerProps) {
@@ -55,6 +65,10 @@ export default function TransactionDrawer({
   // Merchant rename
   const [editingMerchant, setEditingMerchant] = useState(false)
   const [merchantDraft, setMerchantDraft] = useState(row.merchant_normalized || '')
+  // When a rename is ambiguous (merchant spans >1 raw descriptor), hold the new
+  // name here and ask the user whether to apply it to the whole group or just this
+  // descriptor, instead of applying immediately.
+  const [scopePrompt, setScopePrompt] = useState<string | null>(null)
 
   // Escape key handler
   useEffect(() => {
@@ -76,6 +90,7 @@ export default function TransactionDrawer({
       prevId.current = row.id
       setEditingAmount(false)
       setEditingMerchant(false)
+      setScopePrompt(null)
     }
     setNotesDraft(row.notes ?? '')
     setMerchantDraft(row.merchant_normalized || '')
@@ -98,9 +113,20 @@ export default function TransactionDrawer({
   const commitMerchant = () => {
     const trimmed = merchantDraft.trim()
     if (trimmed && trimmed !== row.merchant_normalized) {
-      onRenameMerchant(row.merchant_normalized || '', trimmed)
+      // Ambiguous: this merchant name covers several different raw descriptors, so
+      // ask whether to rename all of them or just this one. Otherwise apply directly.
+      if (merchantDescriptorCount > 1) {
+        setScopePrompt(trimmed)
+      } else {
+        onRenameMerchant(trimmed, 'group')
+      }
     }
     setEditingMerchant(false)
+  }
+
+  const applyRename = (scope: 'group' | 'descriptor') => {
+    if (scopePrompt) onRenameMerchant(scopePrompt, scope)
+    setScopePrompt(null)
   }
 
   const dupOf = row.potential_dup_of
@@ -224,7 +250,8 @@ export default function TransactionDrawer({
 
         {/* Status badges */}
         {(row.pending || row.is_transfer || row.is_duplicate || isRecurring ||
-          row.needs_review || row.is_reimbursement || row.is_potential_duplicate) && (
+          row.needs_review || row.is_reimbursement || row.is_potential_duplicate ||
+          row.is_excluded) && (
           <div
             style={{
               padding: '10px 16px',
@@ -248,6 +275,12 @@ export default function TransactionDrawer({
             {row.is_duplicate && (
               <span style={{ background: 'rgba(232,96,96,0.15)', color: 'var(--color-negative)', fontSize: 11, padding: '3px 8px', borderRadius: 12 }}>
                 dup
+              </span>
+            )}
+            {row.is_excluded && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'var(--color-surface-raise)', color: 'var(--color-text-muted)', fontSize: 11, padding: '3px 8px', borderRadius: 12, border: '1px solid var(--color-border)' }}>
+                <EyeOff size={10} />
+                excluded
               </span>
             )}
             {isRecurring && (
@@ -487,9 +520,52 @@ export default function TransactionDrawer({
                 </button>
               </div>
             )}
-            <p style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4, lineHeight: 1.4 }}>
-              Renames apply to all transactions from this merchant.
-            </p>
+            {scopePrompt ? (
+              <div
+                className="mt-2 rounded-lg p-2.5 space-y-2"
+                style={{ background: 'var(--color-surface-raise)', border: '1px solid var(--color-border)' }}
+              >
+                <p style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>
+                  Rename to <span style={{ color: 'var(--color-text-primary)', fontWeight: 600 }}>{scopePrompt}</span> —
+                  this merchant covers {merchantDescriptorCount} different descriptors. Apply to:
+                </p>
+                <button
+                  onClick={() => applyRename('group')}
+                  className="w-full rounded-md"
+                  style={{
+                    fontSize: 12, padding: '6px 10px', textAlign: 'left', cursor: 'pointer',
+                    background: 'var(--color-surface)', border: '1px solid var(--color-border)',
+                    color: 'var(--color-text-primary)',
+                  }}
+                >
+                  All transactions for <strong>{row.merchant_normalized}</strong>
+                </button>
+                <button
+                  onClick={() => applyRename('descriptor')}
+                  className="w-full rounded-md"
+                  style={{
+                    fontSize: 12, padding: '6px 10px', textAlign: 'left', cursor: 'pointer',
+                    background: 'var(--color-surface)', border: '1px solid var(--color-border)',
+                    color: 'var(--color-text-primary)',
+                  }}
+                >
+                  Only this descriptor
+                  <span style={{ display: 'block', fontSize: 10, color: 'var(--color-text-muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {row.name}
+                  </span>
+                </button>
+                <button
+                  onClick={() => setScopePrompt(null)}
+                  style={{ fontSize: 11, color: 'var(--color-text-muted)', cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <p style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4, lineHeight: 1.4 }}>
+                Renames apply to all transactions from this merchant.
+              </p>
+            )}
           </div>
 
           {/* Recurring toggle */}
@@ -516,26 +592,109 @@ export default function TransactionDrawer({
                 </div>
               )}
             </div>
-            <button
-              onClick={() =>
-                recurringRule
-                  ? onUnmarkRecurring(recurringRule.id)
-                  : onMarkRecurring(String(row.id))
+            {(() => {
+              const busy = isMarkRecurringPending || isUnmarkRecurringPending || isSuppressRecurringPending
+              const baseBtn: React.CSSProperties = {
+                fontSize: 12,
+                padding: '4px 12px',
+                borderRadius: 6,
+                cursor: 'pointer',
+                fontWeight: 500,
+                opacity: busy ? 0.6 : 1,
               }
-              disabled={isMarkRecurringPending || isUnmarkRecurringPending}
+              const removeBtn = (onClick: () => void) => (
+                <button
+                  onClick={onClick}
+                  disabled={busy}
+                  style={{
+                    ...baseBtn,
+                    border: '1px solid var(--color-accent)',
+                    background: 'var(--color-accent)',
+                    color: 'var(--color-accent-contrast)',
+                  }}
+                >
+                  Remove
+                </button>
+              )
+              // Manual rule → delete it. Auto-detected → suppress (no rule to delete),
+              // and also offer to pin it into a firm rule. Not recurring → mark it.
+              if (recurringRule) return removeBtn(() => onUnmarkRecurring(recurringRule.id))
+              if (isRecurring) {
+                return (
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button
+                      onClick={() => onMarkRecurring(String(row.id))}
+                      disabled={busy}
+                      title="Pin this into a firm rule so detection always keeps it"
+                      style={{
+                        ...baseBtn,
+                        border: '1px solid var(--color-border)',
+                        background: 'var(--color-surface)',
+                        color: 'var(--color-text-secondary)',
+                      }}
+                    >
+                      Pin rule
+                    </button>
+                    {removeBtn(() => onSuppressRecurring(String(row.id)))}
+                  </div>
+                )
+              }
+              return (
+                <button
+                  onClick={() => onMarkRecurring(String(row.id))}
+                  disabled={busy}
+                  style={{
+                    ...baseBtn,
+                    border: '1px solid var(--color-border)',
+                    background: 'var(--color-surface)',
+                    color: 'var(--color-text-secondary)',
+                  }}
+                >
+                  Mark recurring
+                </button>
+              )
+            })()}
+          </div>
+
+          {/* Exclude from reports toggle */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '10px 12px',
+              borderRadius: 8,
+              border: '1px solid var(--color-border)',
+              background: row.is_excluded ? 'var(--color-surface-raise)' : 'transparent',
+              marginBottom: 16,
+            }}
+          >
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--color-text-primary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <EyeOff size={14} style={{ color: row.is_excluded ? 'var(--color-accent)' : 'var(--color-text-muted)' }} />
+                Exclude from reports
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 2, maxWidth: 200, lineHeight: 1.4 }}>
+                Stays in this list; left out of Overview totals, categories &amp; trends.
+              </div>
+            </div>
+            <button
+              onClick={() => onPatch(row.id, { excluded: !row.is_excluded })}
+              disabled={isPatchPending}
               style={{
                 fontSize: 12,
                 padding: '4px 12px',
                 borderRadius: 6,
-                border: `1px solid ${isRecurring ? 'var(--color-accent)' : 'var(--color-border)'}`,
-                background: isRecurring ? 'var(--color-accent)' : 'var(--color-surface)',
-                color: isRecurring ? 'var(--color-accent-contrast)' : 'var(--color-text-secondary)',
+                border: `1px solid ${row.is_excluded ? 'var(--color-accent)' : 'var(--color-border)'}`,
+                background: row.is_excluded ? 'var(--color-accent)' : 'var(--color-surface)',
+                color: row.is_excluded ? 'var(--color-accent-contrast)' : 'var(--color-text-secondary)',
                 cursor: 'pointer',
                 fontWeight: 500,
-                opacity: (isMarkRecurringPending || isUnmarkRecurringPending) ? 0.6 : 1,
+                opacity: isPatchPending ? 0.6 : 1,
+                flexShrink: 0,
               }}
             >
-              {recurringRule ? 'Remove' : isRecurring ? 'Pin rule' : 'Mark recurring'}
+              {row.is_excluded ? 'Excluded' : 'Exclude'}
             </button>
           </div>
 

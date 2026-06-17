@@ -167,6 +167,9 @@ def _run_migrations():
         """)
         # Backfill user_id on pre-existing rows and tenant-scope the table.
         conn.execute("ALTER TABLE overrides ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE")
+        # Per-transaction "exclude from reports" flag — keeps the row in the ledger
+        # but drops it from all spending/income analytics (the monthly Overview).
+        conn.execute("ALTER TABLE overrides ADD COLUMN IF NOT EXISTS excluded BOOLEAN NOT NULL DEFAULT FALSE")
         conn.execute("""
             UPDATE overrides o SET user_id = t.user_id
             FROM transactions t
@@ -300,6 +303,12 @@ def _run_migrations():
                 UNIQUE (user_id, merchant_key)
             )
         """)
+        # A suppressed row means "the user said this merchant is NOT recurring" —
+        # auto-detection skips the key so a heuristic match can't keep re-tagging it.
+        conn.execute(
+            "ALTER TABLE user_recurring_rules "
+            "ADD COLUMN IF NOT EXISTS is_suppressed BOOLEAN NOT NULL DEFAULT FALSE"
+        )
 
         # Plaid item health — cached result of /item/get per connected account
         conn.execute("""
@@ -914,6 +923,7 @@ def fetch_transactions(user_id: int) -> list[dict]:
                 COALESCE(o.notes, '')              AS notes,
                 (o.transaction_id IS NOT NULL
                  AND o.category IS NOT NULL)       AS has_user_override,
+                COALESCE(o.excluded, FALSE)        AS is_excluded,
                 COALESCE(t.is_manual, FALSE)       AS is_manual
             FROM transactions t
             LEFT JOIN overrides o       ON t.id = o.transaction_id
@@ -983,18 +993,21 @@ def upsert_transactions(transactions: list[dict]):
 # ── Overrides ────────────────────────────────────────────────────────────────────
 
 def save_override(user_id: int, transaction_id: str, category: str = None,
-                  amount: float = None, notes: str = None):
+                  amount: float = None, notes: str = None, excluded: bool = None):
     # Runs under the user's RLS context so the override is bound to them.
+    # `excluded` is COALESCEd like the rest: pass None to leave it unchanged,
+    # True/False to toggle the "exclude from reports" flag.
     with get_user_conn(user_id) as conn:
         conn.execute("""
-            INSERT INTO overrides (transaction_id, user_id, category, amount, notes, updated_at)
-            VALUES (%s, %s, %s, %s, %s, NOW())
+            INSERT INTO overrides (transaction_id, user_id, category, amount, notes, excluded, updated_at)
+            VALUES (%s, %s, %s, %s, %s, COALESCE(%s, FALSE), NOW())
             ON CONFLICT (transaction_id) DO UPDATE SET
                 category   = COALESCE(EXCLUDED.category,  overrides.category),
                 amount     = COALESCE(EXCLUDED.amount,    overrides.amount),
                 notes      = COALESCE(EXCLUDED.notes,     overrides.notes),
+                excluded   = COALESCE(%s,                 overrides.excluded),
                 updated_at = NOW()
-        """, (transaction_id, user_id, category, amount, notes))
+        """, (transaction_id, user_id, category, amount, notes, excluded, excluded))
 
 
 def insert_manual_transaction(user_id: int, name: str, date: str, amount: float,

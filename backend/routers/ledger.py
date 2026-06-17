@@ -41,7 +41,7 @@ def ledger(
                          "amount", "institution", "pending", "type",
                          "is_transfer", "is_duplicate", "notes",
                          "has_user_override", "is_manual",
-                         "is_reimbursement", "needs_review",
+                         "is_reimbursement", "needs_review", "is_excluded",
                          "is_potential_duplicate", "potential_dup_of"]
             if c in df.columns]
     result = df[cols].sort_values("date", ascending=False).reset_index(drop=True)
