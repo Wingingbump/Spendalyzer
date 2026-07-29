@@ -18,6 +18,11 @@ client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 # ── Transfer keywords & config ─────────────────────────────────────────────────
 
 P2P_PLATFORMS = ["venmo", "paypal", "zelle", "cashapp", "apple cash"]
+
+# Descriptor keywords that indicate an INTERNAL transfer or a credit-card/loan
+# payment — never a P2P platform name. P2P platforms were removed: a Zelle/Venmo
+# payment to a person is real spending, not a transfer, and must not vanish from
+# reports. This list is only a fallback for rows Plaid didn't enrich with a PFC.
 TRANSFER_KEYWORDS = [
     "automatic payment", "credit card payment",
     "internet payment", "online payment", "ach transfer", "mobile payment",
@@ -25,75 +30,121 @@ TRANSFER_KEYWORDS = [
     "bank transfer", "wire transfer", "payment thank",
     "bill pay", "online transfer", "autopay",
     "withdrawal to", "transfer to", "transfer from",
-    "deposit from", "fid bkg svc", "discover",
+    "deposit from", "fid bkg svc",
     "standard transfer", "instant transfer",
     "paycheck percentage",
-] + P2P_PLATFORMS
+]
 
 TRANSFER_CATEGORIES = []
 
 P2P_INSTITUTIONS = P2P_PLATFORMS
 
+# Aliases used to recognise which P2P platform a descriptor or institution refers
+# to, tolerating variants like "Venmo - Personal", "CASH APP", or "PP*".
+_PLATFORM_ALIASES = {
+    "venmo":      ["venmo"],
+    "paypal":     ["paypal", "pp*", "pypl"],
+    "cashapp":    ["cash app", "cashapp", "cash-app"],
+    "zelle":      ["zelle"],
+    "apple cash": ["apple cash"],
+}
+
+
+def platform_of(text: str) -> str | None:
+    """Return the canonical P2P platform named in `text`, or None."""
+    t = (text or "").lower()
+    for plat, aliases in _PLATFORM_ALIASES.items():
+        if any(a in t for a in aliases):
+            return plat
+    return None
+
+
 INSTITUTION_PRIORITY = {
     "discover":    2,
     "capital one": 2,
-    "venmo":       1, 
+    "venmo":       1,
     "cashapp":     1,
     "paypal":      1,
 }
 
-ZELLE_INSTITUTIONS = ["capital one", "discover", "chase", "bank of america"]
-BUSINESS_WORDS = ["restaurant", "cafe", "shop", "store", "market", "grill",
-                  "bar", "hotel", "inn", "llc", "inc", "corp", "co ",
-                  "tst", "amc", "metro", "google", "apple", "amazon"]
+# ── Personal Finance Category (PFC) signals ────────────────────────────────────
+# PFC is Plaid's classification of a transaction's intent and is the primary,
+# most reliable transfer signal — descriptor keywords are only a fallback for
+# rows Plaid didn't enrich. Ingested in services/pull.py.
 
-
-def looks_like_person_name(name: str) -> bool:
-    """Heuristic — two capitalized words, no business indicators."""
-    name_lower = name.lower()
-    if any(bw in name_lower for bw in BUSINESS_WORDS):
-        return False
-    # Match "Firstname Lastname" pattern
-    parts = name.strip().split()
-    if len(parts) == 2 and all(p.isalpha() and p[0].isupper() for p in parts):
-        return True
-    return False
+# Detailed PFC types meaning "money moved between the user's OWN accounts, or a
+# credit-card payment" — never spending, never income. A card payment counts as a
+# transfer so it doesn't double-count spend already recorded on the card itself.
+PFC_TRANSFER_DETAILED = {
+    "TRANSFER_IN_ACCOUNT_TRANSFER",
+    "TRANSFER_OUT_ACCOUNT_TRANSFER",
+    "TRANSFER_IN_SAVINGS",
+    "TRANSFER_OUT_SAVINGS",
+    "TRANSFER_IN_INVESTMENT_AND_RETIREMENT_FUNDS",
+    "TRANSFER_OUT_INVESTMENT_AND_RETIREMENT_FUNDS",
+    "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT",
+}
+# PFC primary buckets that clearly mean spending or income. When Plaid is
+# confident a row is one of these, a descriptor keyword must NOT override it into
+# a transfer (e.g. "SQ *…PAYMENT" that is really a coffee shop). Note: other
+# LOAN_PAYMENTS (mortgage, auto, student) are intentionally real spend, not here
+# and not treated as transfers.
+PFC_NONTRANSFER_PRIMARY = {
+    "FOOD_AND_DRINK", "GENERAL_MERCHANDISE", "GENERAL_SERVICES",
+    "ENTERTAINMENT", "MEDICAL", "PERSONAL_CARE", "RENT_AND_UTILITIES",
+    "TRANSPORTATION", "TRAVEL", "HOME_IMPROVEMENT",
+    "GOVERNMENT_AND_NON_PROFIT", "BANK_FEES", "INCOME",
+}
+# Confidence levels trusted for an automatic decision in either direction.
+PFC_TRUSTED_CONFIDENCE = {"VERY_HIGH", "HIGH"}
 
 
 def flag_transfers(df: pd.DataFrame) -> pd.DataFrame:
+    """Flag internal transfers and credit-card payments — movements that are
+    neither spending nor income.
+
+    A P2P payment to a *person* (Zelle/Venmo to a friend) is deliberately NOT a
+    transfer here: it is real spending unless flag_paired_transfers later matches
+    it to another of the user's own accounts. Cashing a P2P *balance* out to your
+    own bank is still an internal move and is kept.
+
+    Precedence: trust Plaid's PFC when present and confident; fall back to
+    descriptor keywords only for rows Plaid didn't enrich.
+    """
     df = df.copy()
+    name_l = df["name"].fillna("").str.lower()
+    inst_l = df["institution"].fillna("").str.lower()
 
-    keyword_match = df["name"].str.lower().apply(
-        lambda n: any(kw in n for kw in TRANSFER_KEYWORDS)
-    )
-
-    p2p_balance_transfer = (
-        df["institution"].str.lower().isin(P2P_INSTITUTIONS) &
-        df["name"].str.lower().apply(
-            lambda n: any(kw in n for kw in [
-                "transfer", "bank", "standard transfer",
-                "instant transfer", "cashout", "withdrawal",
-                "deposit", "reload"
-            ])
-        )
-    )
-
-    # Zelle payments on bank accounts show as person names. Credit cards can't
-    # send Zelle, so gate on account subtype — otherwise 2-word merchant names
-    # like "Shake Shack" or "Rice Culture" on a credit card get false-flagged.
-    if "account_subtype" in df.columns:
-        on_bank_account = df["account_subtype"].fillna("").str.lower().isin(
-            ["checking", "savings", "money market"]
-        )
+    # ── PFC signal (primary) ──
+    if "pfc_detailed" in df.columns:
+        detailed = df["pfc_detailed"].fillna("")
+        primary = (df["pfc_primary"].fillna("") if "pfc_primary" in df.columns
+                   else pd.Series("", index=df.index))
+        confidence = (df["pfc_confidence"].fillna("") if "pfc_confidence" in df.columns
+                      else pd.Series("", index=df.index))
+        trusted = confidence.isin(PFC_TRUSTED_CONFIDENCE)
+        pfc_transfer = detailed.isin(PFC_TRANSFER_DETAILED) & trusted
+        pfc_shields_spend = primary.isin(PFC_NONTRANSFER_PRIMARY) & trusted
     else:
-        on_bank_account = pd.Series(True, index=df.index)  # backwards compat
-    zelle_payment = (
-        df["institution"].str.lower().isin(ZELLE_INSTITUTIONS) &
-        on_bank_account &
-        df["name"].apply(looks_like_person_name)
+        pfc_transfer = pd.Series(False, index=df.index)
+        pfc_shields_spend = pd.Series(False, index=df.index)
+
+    # ── Keyword fallback (no P2P platforms, no person-name guessing) ──
+    keyword_match = name_l.apply(lambda n: any(kw in n for kw in TRANSFER_KEYWORDS))
+
+    # Cashing a P2P balance out to your own bank IS an internal move (distinct
+    # from paying a person). Gated to P2P institutions + balance-movement words.
+    p2p_balance_transfer = (
+        inst_l.isin(P2P_INSTITUTIONS) &
+        name_l.apply(lambda n: any(kw in n for kw in [
+            "transfer", "bank", "standard transfer", "instant transfer",
+            "cashout", "withdrawal", "deposit", "reload",
+        ]))
     )
 
-    df["is_transfer"] = keyword_match | p2p_balance_transfer | zelle_payment
+    keyword_transfer = (keyword_match | p2p_balance_transfer) & ~pfc_shields_spend
+
+    df["is_transfer"] = pfc_transfer | keyword_transfer
     return df
 
 # ── Dedup cache ────────────────────────────────────────────────────────────────
@@ -193,6 +244,93 @@ def flag_paired_transfers(
         df.at[i, "dedup_reason"] = "paired transfer"
         consumed.add(i)
         consumed.add(j)
+
+    return df
+
+
+# ── Layer 2.6: P2P-mirror detection (funded-by-card double entries) ─────────────
+
+def flag_p2p_mirror_duplicates(
+    df: pd.DataFrame,
+    amount_tolerance: float = 0.01,
+    date_window_days: int = 5,
+) -> pd.DataFrame:
+    """Collapse the two-sided entry a P2P payment creates when it's funded by a
+    linked card/bank.
+
+    A single Venmo/PayPal/Cash App payment shows up twice:
+      1. on the P2P account, with the real payee and memo (e.g. Venmo →
+         'Courtney L "borgerking"'), and
+      2. on the funding card, as a generic settlement line (e.g. Capital One →
+         'Venmo').
+    Name-similarity dedup can't pair these (the descriptors share no words), so we
+    match on the platform link + amount + date instead:
+
+      • Funding a payment  — card-side DEBIT ↔ same-amount P2P-account DEBIT.
+        The card line is hidden (is_duplicate); the detailed P2P row is kept.
+      • Balance cash-out    — card-side CREDIT ↔ P2P-account balance transfer of
+        the same magnitude. The card credit is an internal move → is_transfer.
+
+    The P2P side always carries the useful detail, so it is the survivor.
+    """
+    df = df.copy()
+    if df.empty or "type" not in df.columns:
+        return df
+
+    plat_name = df["name"].fillna("").apply(platform_of)         # platform the descriptor names
+    plat_inst = df["institution"].fillna("").apply(platform_of)  # platform of the account itself
+
+    # Card-side settlement lines: the descriptor names a platform, but the account
+    # itself is not that platform (i.e. the funding card/bank, not Venmo).
+    card_side = df[plat_name.notna() & plat_inst.isna() & ~df["is_duplicate"].fillna(False)]
+    if card_side.empty:
+        return df
+
+    p2p_idx = df.index[plat_inst.notna()]
+    if len(p2p_idx) == 0:
+        return df
+
+    consumed: set = set()
+    for i, r in card_side.sort_values("date").iterrows():
+        plat = plat_name[i]
+        within_window = (df.loc[p2p_idx, "date"] - r["date"]).abs() <= pd.Timedelta(days=date_window_days)
+        same_plat = plat_inst.loc[p2p_idx] == plat
+        base = p2p_idx[same_plat.values & within_window.values]
+        base = [j for j in base if j not in consumed]
+        if not base:
+            continue
+        cand = df.loc[base]
+
+        if r["type"] == "debit":
+            # Funding a payment — match a same-amount P2P debit that isn't itself a
+            # balance transfer. Hide the generic card line; keep the detailed row.
+            m = cand[
+                (cand["type"] == "debit")
+                & (~cand["is_transfer"].fillna(False))
+                & ((cand["amount"] - r["amount"]).abs() <= amount_tolerance)
+            ]
+            if m.empty:
+                continue
+            j = (m["date"] - r["date"]).abs().sort_values().index[0]
+            df.at[i, "is_duplicate"] = True
+            df.at[i, "dedup_reason"] = f"p2p funding ({plat})"
+            consumed.add(j)
+        else:
+            # Card credit — a P2P balance cash-out landing on the card. Match the
+            # outgoing balance transfer by magnitude; flag the card side a transfer.
+            target = abs(float(r["amount"]))
+            m = cand[
+                (cand["type"] == "debit")
+                & ((cand["amount"] - target).abs() <= amount_tolerance)
+                & (cand["is_transfer"].fillna(False)
+                   | cand["name"].fillna("").str.lower().str.contains("transfer"))
+            ]
+            if m.empty:
+                continue
+            j = (m["date"] - r["date"]).abs().sort_values().index[0]
+            df.at[i, "is_transfer"] = True
+            df.at[i, "dedup_reason"] = f"p2p cashout ({plat})"
+            consumed.add(j)
 
     return df
 
@@ -346,38 +484,26 @@ def apply_dedup(df: pd.DataFrame) -> pd.DataFrame:
     df["dedup_reason"] = ""
     df["fingerprint"] = df.apply(make_fingerprint, axis=1)
 
-    # Layer 1: flag_transfers handles all transfer detection holistically
+    # Layer 1: PFC + keyword transfer detection. Authoritative and recomputed on
+    # every run, so it is deliberately NOT cached — otherwise a stale per-row
+    # decision (e.g. a Zelle payment flagged as a transfer under the old rules)
+    # would resurrect itself from the cache and re-hide the transaction.
     df = flag_transfers(df)
-    df["dedup_reason"] = df.apply(
-        lambda r: "transfer" if r["is_transfer"] else "", axis=1
-    )
+    df.loc[df["is_transfer"], "dedup_reason"] = "transfer"
 
-    cache = load_dedup_cache()
-
-    # Layer 2: Cache and per-row rule check for anything not already flagged
-    for i, row in df.iterrows():
-        if df.at[i, "is_transfer"]:
-            # Already flagged — cache the decision
-            fp = row["fingerprint"]
-            if not check_cache(fp, cache):
-                upsert_dedup_entry(fp, False, True, "rule", df.at[i, "dedup_reason"])
-                cache[fp] = {"is_duplicate": False, "is_transfer": True,
-                              "source": "rule", "reason": df.at[i, "dedup_reason"]}
-            continue
-
-        fp = row["fingerprint"]
-        cached = check_cache(fp, cache)
-        if cached:
-            df.at[i, "is_transfer"] = cached["is_transfer"]
-            df.at[i, "is_duplicate"] = cached["is_duplicate"]
-            df.at[i, "dedup_reason"] = cached["reason"]
+    # Layer 2: Collapse P2P payments that also appear as a generic funding line on
+    # the linked card (e.g. Capital One "Venmo" mirroring a Venmo payment). Runs
+    # before paired detection so the hidden card line is excluded from its pool.
+    df = flag_p2p_mirror_duplicates(df)
 
     # Layer 2.5: Catch internal transfer pairs the keyword pass missed (paycheck
-    # splits, credit-card payments, etc.). Not cached on individual fingerprint
-    # because the decision is pair-dependent, not row-intrinsic.
+    # splits, credit-card payments, inter-account moves). Pair-dependent, so also
+    # recomputed each run rather than cached.
     df = flag_paired_transfers(df)
 
-    # Layer 3 + 4: Cross-institution duplicate detection
+    # Layer 3 + 4: Cross-institution duplicate detection. Only the expensive AI
+    # duplicate arbitration is cached, keyed on the transaction pair.
+    cache = load_dedup_cache()
     pairs = find_potential_duplicates(df)
 
     for idx_a, idx_b in pairs:

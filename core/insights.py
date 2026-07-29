@@ -6,7 +6,7 @@ import numpy as np
 from cachetools import TTLCache
 from core.categorize import apply_categories
 from core.dedup import apply_dedup, get_clean_spending, flag_potential_duplicates
-from core.db import fetch_transactions, get_merchant_overrides, get_merchant_category_overrides, get_dismissed_duplicate_pairs
+from core.db import fetch_transactions, get_merchant_overrides, get_merchant_category_overrides, get_dismissed_duplicate_pairs, get_transfer_overrides
 
 
 # ── Per-user DataFrame cache ───────────────────────────────────────────────────
@@ -64,6 +64,12 @@ def _build_df(user_id: int) -> pd.DataFrame:
             "pending": pd.Series(dtype=bool),
             "institution": pd.Series(dtype=str),
             "plaid_account_id": pd.Series(dtype=str),
+            "pfc_primary": pd.Series(dtype=str),
+            "pfc_detailed": pd.Series(dtype=str),
+            "pfc_confidence": pd.Series(dtype=str),
+            "payment_channel": pd.Series(dtype=str),
+            "plaid_merchant_name": pd.Series(dtype=str),
+            "counterparties": pd.Series(dtype=str),
             "account_name": pd.Series(dtype=str),
             "account_mask": pd.Series(dtype=str),
             "account_subtype": pd.Series(dtype=str),
@@ -137,9 +143,38 @@ def _build_df(user_id: int) -> pd.DataFrame:
             for name, norm in zip(df["name"], df["merchant_normalized"])
         ]
 
+    # Apply per-counterparty transfer rulings the user has taught us. Runs last so
+    # it keys on the final displayed merchant name — the same value the correction
+    # endpoint reads — and always wins over auto-detection.
+    df = apply_transfer_overrides(df, get_transfer_overrides(user_id))
+
     with _df_cache_lock:
         _df_cache[user_id] = df
     return df
+
+def apply_transfer_overrides(df: pd.DataFrame, overrides: dict) -> pd.DataFrame:
+    """Force `is_transfer` for counterparties the user has ruled on.
+
+    `overrides` maps merchant_normalized -> bool. Forcing a row to a transfer also
+    clears any reimbursement/review flags, since a transfer is neither spending,
+    income, nor a reimbursement. A user's per-transaction category edit is on a
+    different column and is untouched.
+    """
+    if not overrides or df.empty or "merchant_normalized" not in df.columns:
+        return df
+    forced = df["merchant_normalized"].map(overrides)
+    has_ruling = forced.notna()
+    if not has_ruling.any():
+        return df
+    df.loc[has_ruling, "is_transfer"] = forced[has_ruling].astype(bool)
+    now_transfer = has_ruling & df["is_transfer"].fillna(False)
+    df.loc[now_transfer, "dedup_reason"] = "transfer (user)"
+    if "is_reimbursement" in df.columns:
+        df.loc[now_transfer, "is_reimbursement"] = False
+    if "needs_review" in df.columns:
+        df.loc[now_transfer, "needs_review"] = False
+    return df
+
 
 # ── Filtering ──────────────────────────────────────────────────────────────────
 

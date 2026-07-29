@@ -153,6 +153,22 @@ def _run_migrations():
         conn.execute("""
             ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_manual BOOLEAN DEFAULT FALSE
         """)
+        # Plaid enrichment fields (Personal Finance Category + counterparty data).
+        # These are the primary signals for transfer/income/spend classification —
+        # far more reliable than descriptor keyword matching. Nullable so manual and
+        # pre-enrichment rows are unaffected. counterparties is JSON text (a small
+        # list of {name, type}) parsed in Python, not queried in SQL.
+        for _col, _type in (
+            ("pfc_primary",         "TEXT"),
+            ("pfc_detailed",        "TEXT"),
+            ("pfc_confidence",      "TEXT"),
+            ("payment_channel",     "TEXT"),
+            ("plaid_merchant_name", "TEXT"),
+            ("counterparties",      "TEXT"),
+        ):
+            conn.execute(
+                f"ALTER TABLE transactions ADD COLUMN IF NOT EXISTS {_col} {_type}"
+            )
 
         # Overrides
         conn.execute("""
@@ -282,6 +298,21 @@ def _run_migrations():
                 category            TEXT    NOT NULL,
                 updated_at          TIMESTAMPTZ DEFAULT NOW(),
                 PRIMARY KEY (user_id, merchant_normalized)
+            )
+        """)
+
+        # Transfer overrides — per-user, per-counterparty "treat as transfer" memory.
+        # A user correction ("this Zelle to a person is NOT a transfer", or "this IS
+        # an internal move the auto-detection missed") is remembered by merchant key
+        # and re-applied to every past and future transaction from that counterparty,
+        # so the same mistake is never surfaced twice.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS transfer_overrides (
+                user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                merchant_key TEXT    NOT NULL,
+                is_transfer  BOOLEAN NOT NULL,
+                updated_at   TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (user_id, merchant_key)
             )
         """)
 
@@ -635,7 +666,8 @@ def _run_migrations():
                       "custom_groups", "category_map", "user_goals", "financial_events",
                       "user_profile", "financial_snapshots", "conversation_memory",
                       "advice_history", "nudges", "merchant_overrides",
-                      "merchant_category_overrides", "user_categories",
+                      "merchant_category_overrides", "transfer_overrides",
+                      "user_categories",
                       "user_recurring_rules", "dismissed_duplicates", "overrides",
                       "refresh_tokens", "email_verification_tokens", "password_reset_tokens"):
             _policy(table, f"CASE WHEN {_CUR} = 'bypass' THEN TRUE ELSE user_id = {_UID} END")
@@ -924,7 +956,13 @@ def fetch_transactions(user_id: int) -> list[dict]:
                 (o.transaction_id IS NOT NULL
                  AND o.category IS NOT NULL)       AS has_user_override,
                 COALESCE(o.excluded, FALSE)        AS is_excluded,
-                COALESCE(t.is_manual, FALSE)       AS is_manual
+                COALESCE(t.is_manual, FALSE)       AS is_manual,
+                t.pfc_primary,
+                t.pfc_detailed,
+                t.pfc_confidence,
+                t.payment_channel,
+                t.plaid_merchant_name,
+                t.counterparties
             FROM transactions t
             LEFT JOIN overrides o       ON t.id = o.transaction_id
             LEFT JOIN plaid_accounts pa ON t.plaid_account_id = pa.plaid_account_id
@@ -971,22 +1009,43 @@ def delete_transactions_by_ids(transaction_ids: list[str]) -> int:
     return result.rowcount
 
 
+_ENRICHMENT_COLS = (
+    "pfc_primary", "pfc_detailed", "pfc_confidence",
+    "payment_channel", "plaid_merchant_name", "counterparties",
+)
+
+
 def upsert_transactions(transactions: list[dict]):
+    # Ensure every enrichment column is present on each record so the named
+    # placeholders resolve even for callers that don't supply them.
+    records = [{**{c: None for c in _ENRICHMENT_COLS}, **t} for t in transactions]
     with get_conn() as conn:
         conn.execute("SET LOCAL app.current_user_id = 'bypass'")
         conn.executemany("""
             INSERT INTO transactions
                 (id, date, name, amount, category, pending, institution,
-                 plaid_account_id, user_id)
+                 plaid_account_id, user_id,
+                 pfc_primary, pfc_detailed, pfc_confidence,
+                 payment_channel, plaid_merchant_name, counterparties)
             VALUES
                 (%(id)s, %(date)s, %(name)s, %(amount)s, %(category)s, %(pending)s,
-                 %(institution)s, %(plaid_account_id)s, %(user_id)s)
+                 %(institution)s, %(plaid_account_id)s, %(user_id)s,
+                 %(pfc_primary)s, %(pfc_detailed)s, %(pfc_confidence)s,
+                 %(payment_channel)s, %(plaid_merchant_name)s, %(counterparties)s)
             ON CONFLICT (id) DO UPDATE SET
                 pending     = EXCLUDED.pending,
                 amount      = EXCLUDED.amount,
                 name        = EXCLUDED.name,
-                date        = EXCLUDED.date
-        """, transactions)
+                date        = EXCLUDED.date,
+                -- Refresh enrichment when Plaid provides it, but never overwrite a
+                -- previously-stored value with NULL (a later thin sync shouldn't wipe it).
+                pfc_primary         = COALESCE(EXCLUDED.pfc_primary,         transactions.pfc_primary),
+                pfc_detailed        = COALESCE(EXCLUDED.pfc_detailed,        transactions.pfc_detailed),
+                pfc_confidence      = COALESCE(EXCLUDED.pfc_confidence,      transactions.pfc_confidence),
+                payment_channel     = COALESCE(EXCLUDED.payment_channel,     transactions.payment_channel),
+                plaid_merchant_name = COALESCE(EXCLUDED.plaid_merchant_name, transactions.plaid_merchant_name),
+                counterparties      = COALESCE(EXCLUDED.counterparties,      transactions.counterparties)
+        """, records)
 
 
 
@@ -1544,6 +1603,41 @@ def delete_merchant_category_override(user_id: int, merchant_normalized: str):
         conn.execute(
             "DELETE FROM merchant_category_overrides WHERE user_id = %s AND merchant_normalized = %s",
             (user_id, merchant_normalized)
+        )
+
+
+# ── Transfer overrides (per-counterparty "treat as transfer" memory) ──────────────
+
+def get_transfer_overrides(user_id: int) -> dict:
+    """Return {merchant_key: is_transfer} — the user's remembered transfer rulings."""
+    with get_conn() as conn:
+        conn.execute("SET LOCAL app.current_user_id = %s", (str(user_id),))
+        rows = conn.execute(
+            "SELECT merchant_key, is_transfer FROM transfer_overrides WHERE user_id = %s",
+            (user_id,)
+        ).fetchall()
+    return {r["merchant_key"]: bool(r["is_transfer"]) for r in rows}
+
+
+def upsert_transfer_override(user_id: int, merchant_key: str, is_transfer: bool):
+    with get_conn() as conn:
+        conn.execute("SET LOCAL app.current_user_id = %s", (str(user_id),))
+        conn.execute("""
+            INSERT INTO transfer_overrides (user_id, merchant_key, is_transfer, updated_at)
+            VALUES (%s, %s, %s, NOW())
+            ON CONFLICT (user_id, merchant_key) DO UPDATE SET
+                is_transfer = EXCLUDED.is_transfer,
+                updated_at  = NOW()
+        """, (user_id, merchant_key, is_transfer))
+
+
+def delete_transfer_override(user_id: int, merchant_key: str):
+    """Clear a remembered ruling so the counterparty reverts to auto-detection."""
+    with get_conn() as conn:
+        conn.execute("SET LOCAL app.current_user_id = %s", (str(user_id),))
+        conn.execute(
+            "DELETE FROM transfer_overrides WHERE user_id = %s AND merchant_key = %s",
+            (user_id, merchant_key)
         )
 
 
