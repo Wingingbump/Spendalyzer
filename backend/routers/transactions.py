@@ -10,7 +10,7 @@ from core import insights as ins
 from core.db import (
     delete_transaction, insert_manual_transaction, save_override,
     dismiss_duplicate_pair, transaction_belongs_to_user,
-    upsert_transfer_override, delete_transfer_override,
+    upsert_transfer_override, delete_transfer_override, get_transfer_overrides,
 )
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
@@ -121,6 +121,15 @@ def patch_transaction(
     )
     ins.invalidate_user_cache(current_user["id"])
     return {"ok": True}
+
+
+@router.get("/transfer-overrides")
+def list_transfer_overrides(current_user: dict = Depends(get_current_user)):
+    """Map of merchant_normalized -> is_transfer for the user's remembered rulings.
+    Lets the drawer show whether a counterparty is on Auto, forced-transfer, or
+    forced-spending. (Static path — declared before no param GET exists, so it is
+    never captured as a transaction id.)"""
+    return get_transfer_overrides(current_user["id"])
 
 
 @router.post("/{transaction_id}/transfer")
