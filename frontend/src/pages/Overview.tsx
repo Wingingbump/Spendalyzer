@@ -474,9 +474,20 @@ export default function Overview() {
 
       {/* Monthly Chart */}
       <Card>
-        <p className="mb-4" style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)' }}>
-          Monthly Spending
-        </p>
+        <div className="mb-4 flex items-baseline justify-between gap-3">
+          <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)' }}>
+            Monthly Spending
+          </p>
+          {monthlyAvg > 0 && (
+            <p style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+              avg{' '}
+              <span style={{ fontWeight: 600, color: 'var(--color-text-secondary)' }}>
+                {formatCurrency(monthlyAvg)}
+              </span>
+              /mo
+            </p>
+          )}
+        </div>
         {loadingMonthly ? (
           <div className="flex items-center justify-center" style={{ height: 200 }}>
             <Spinner />
@@ -508,7 +519,7 @@ export default function Overview() {
                   stroke="var(--color-text-muted)"
                   strokeDasharray="4 3"
                   strokeWidth={1}
-                  label={{ value: 'avg', position: 'insideTopRight', fontSize: 10, fill: 'var(--color-text-muted)', dy: -4 }}
+                  label={{ value: `avg ${formatCurrency(monthlyAvg)}`, position: 'insideTopRight', fontSize: 10, fill: 'var(--color-text-muted)', dy: -4 }}
                 />
               )}
               <Bar dataKey="total" radius={[3, 3, 0, 0]}>
