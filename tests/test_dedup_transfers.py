@@ -68,6 +68,11 @@ class TestRealTransfers:
     def test_venmo_balance_cashout_to_bank(self):
         assert _is_transfer(r(name="Venmo Standard Transfer", institution="Venmo"))
 
+    def test_balance_cashout_on_multiword_p2p_institution(self):
+        # Institution match is substring, so "Venmo - Personal" is recognised and a
+        # balance-movement descriptor ("Cashout") flags as a transfer.
+        assert _is_transfer(r(name="Cashout", institution="Venmo - Personal"))
+
     def test_keyword_fallback_when_no_pfc(self):
         assert _is_transfer(r(name="WIRE TRANSFER TO SAVINGS"))
 

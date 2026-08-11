@@ -40,10 +40,12 @@ TRANSFER_CATEGORIES = []
 P2P_INSTITUTIONS = P2P_PLATFORMS
 
 # Aliases used to recognise which P2P platform a descriptor or institution refers
-# to, tolerating variants like "Venmo - Personal", "CASH APP", or "PP*".
+# to, tolerating variants like "Venmo - Personal", "CASH APP", or "PP*". An alias
+# ending in "*" is a processor PREFIX and is matched only at the start of the text
+# — otherwise the short "pp*" would substring-match unrelated "APP*…" descriptors.
 _PLATFORM_ALIASES = {
     "venmo":      ["venmo"],
-    "paypal":     ["paypal", "pp*", "pypl"],
+    "paypal":     ["paypal", "pp*"],
     "cashapp":    ["cash app", "cashapp", "cash-app"],
     "zelle":      ["zelle"],
     "apple cash": ["apple cash"],
@@ -52,10 +54,14 @@ _PLATFORM_ALIASES = {
 
 def platform_of(text: str) -> str | None:
     """Return the canonical P2P platform named in `text`, or None."""
-    t = (text or "").lower()
+    t = (text or "").lower().strip()
     for plat, aliases in _PLATFORM_ALIASES.items():
-        if any(a in t for a in aliases):
-            return plat
+        for a in aliases:
+            if a.endswith("*"):
+                if t.startswith(a):
+                    return plat
+            elif a in t:
+                return plat
     return None
 
 
@@ -134,8 +140,11 @@ def flag_transfers(df: pd.DataFrame) -> pd.DataFrame:
 
     # Cashing a P2P balance out to your own bank IS an internal move (distinct
     # from paying a person). Gated to P2P institutions + balance-movement words.
+    # Substring (not exact) institution match so multi-word names like
+    # "Venmo - Personal" are recognised — same rule flag_paired_transfers uses.
+    on_p2p_account = inst_l.apply(lambda s: any(p in s for p in P2P_INSTITUTIONS))
     p2p_balance_transfer = (
-        inst_l.isin(P2P_INSTITUTIONS) &
+        on_p2p_account &
         name_l.apply(lambda n: any(kw in n for kw in [
             "transfer", "bank", "standard transfer", "instant transfer",
             "cashout", "withdrawal", "deposit", "reload",
@@ -276,6 +285,10 @@ def flag_p2p_mirror_duplicates(
     df = df.copy()
     if df.empty or "type" not in df.columns:
         return df
+    # Degrade gracefully if an upstream caller hasn't initialised the flag columns.
+    for _col in ("is_duplicate", "is_transfer"):
+        if _col not in df.columns:
+            df[_col] = False
 
     plat_name = df["name"].fillna("").apply(platform_of)         # platform the descriptor names
     plat_inst = df["institution"].fillna("").apply(platform_of)  # platform of the account itself
@@ -330,6 +343,9 @@ def flag_p2p_mirror_duplicates(
             j = (m["date"] - r["date"]).abs().sort_values().index[0]
             df.at[i, "is_transfer"] = True
             df.at[i, "dedup_reason"] = f"p2p cashout ({plat})"
+            # Flag the P2P leg too — self-contained rather than relying on
+            # flag_transfers having already caught its descriptor.
+            df.at[j, "is_transfer"] = True
             consumed.add(j)
 
     return df

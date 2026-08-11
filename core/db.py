@@ -153,11 +153,13 @@ def _run_migrations():
         conn.execute("""
             ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_manual BOOLEAN DEFAULT FALSE
         """)
-        # Plaid enrichment fields (Personal Finance Category + counterparty data).
-        # These are the primary signals for transfer/income/spend classification —
-        # far more reliable than descriptor keyword matching. Nullable so manual and
-        # pre-enrichment rows are unaffected. counterparties is JSON text (a small
-        # list of {name, type}) parsed in Python, not queried in SQL.
+        # Plaid enrichment fields. Personal Finance Category (pfc_*) is the primary
+        # signal for transfer/income/spend classification — far more reliable than
+        # descriptor keyword matching. payment_channel / plaid_merchant_name /
+        # counterparties are captured for enrichment and future classifiers but are
+        # not consumed by the current logic. Nullable so manual and pre-enrichment
+        # rows are unaffected. counterparties is JSON text (a small list of
+        # {name, type}) meant to be parsed in Python, not queried in SQL.
         for _col, _type in (
             ("pfc_primary",         "TEXT"),
             ("pfc_detailed",        "TEXT"),

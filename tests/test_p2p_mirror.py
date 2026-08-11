@@ -26,7 +26,12 @@ class TestPlatformOf:
     def test_recognises_variants(self):
         assert platform_of("Venmo - Personal") == "venmo"
         assert platform_of("CASH APP") == "cashapp"
-        assert platform_of("PP*STEAM") == "paypal"
+        assert platform_of("PP*STEAM") == "paypal"  # PayPal processor prefix
+
+    def test_pp_prefix_does_not_match_app_descriptors(self):
+        # "pp*" is a prefix, not a substring — "APP*…" must not read as PayPal.
+        assert platform_of("APP*NETFLIX") is None
+        assert platform_of("APP*SPOTIFY 8005551234") is None
 
     def test_none_for_ordinary_merchant(self):
         assert platform_of("Chipotle") is None
@@ -71,12 +76,16 @@ class TestFundingDuplicate:
 
 class TestCashoutAndNonMatches:
     def test_cashout_credit_becomes_transfer(self):
+        # The P2P leg is NOT pre-flagged — the mirror pass must flag both legs
+        # itself (self-contained), not rely on flag_transfers having caught it.
         out = _run([
             _row("2026-07-24", "Venmo", -83.67, "Capital One"),
-            _row("2026-07-23", "Standard transfer", 83.67, "Venmo - Personal", is_transfer=True),
+            _row("2026-07-23", "Standard transfer", 83.67, "Venmo - Personal"),
         ])
         card = out[out["institution"] == "Capital One"].iloc[0]
+        p2p = out[out["institution"] == "Venmo - Personal"].iloc[0]
         assert bool(card["is_transfer"]) and not bool(card["is_duplicate"])
+        assert bool(p2p["is_transfer"])  # survivor leg flagged too
         assert card["dedup_reason"] == "p2p cashout (venmo)"
 
     def test_received_money_is_untouched(self):
