@@ -10,6 +10,7 @@ from core import insights as ins
 from core.db import (
     delete_transaction, insert_manual_transaction, save_override,
     dismiss_duplicate_pair, transaction_belongs_to_user,
+    upsert_transfer_override, delete_transfer_override, get_transfer_overrides,
 )
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
@@ -42,6 +43,12 @@ class CreateTransactionBody(BaseModel):
 
 class DismissDuplicateBody(BaseModel):
     other_id: str
+
+
+class TransferBody(BaseModel):
+    # True = always treat this counterparty as a transfer; False = never;
+    # None = clear the remembered rule and revert to auto-detection.
+    is_transfer: Optional[bool] = None
 
 
 @router.get("")
@@ -114,6 +121,50 @@ def patch_transaction(
     )
     ins.invalidate_user_cache(current_user["id"])
     return {"ok": True}
+
+
+@router.get("/transfer-overrides")
+def list_transfer_overrides(current_user: dict = Depends(get_current_user)):
+    """Map of merchant_normalized -> is_transfer for the user's remembered rulings.
+    Lets the drawer show whether a counterparty is on Auto, forced-transfer, or
+    forced-spending. (Static path — declared before no param GET exists, so it is
+    never captured as a transaction id.)"""
+    return get_transfer_overrides(current_user["id"])
+
+
+@router.post("/{transaction_id}/transfer")
+def set_transfer_treatment(
+    transaction_id: str,
+    body: TransferBody,
+    current_user: dict = Depends(get_current_user),
+):
+    """Remember how to treat this transaction's counterparty (transfer vs. not).
+
+    The ruling is stored against the counterparty (its resolved merchant name), so
+    it applies to every past and future transaction from the same payee — the user
+    only ever has to correct a given counterparty once.
+    """
+    if not transaction_belongs_to_user(transaction_id, current_user["id"]):
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    df = ins.load_data(current_user["id"])
+    row = df[df["id"] == transaction_id]
+    if row.empty:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    merchant_key = row.iloc[0].get("merchant_normalized")
+    if not merchant_key or pd.isna(merchant_key):
+        raise HTTPException(
+            status_code=422, detail="Transaction has no counterparty to apply a rule to"
+        )
+
+    if body.is_transfer is None:
+        delete_transfer_override(current_user["id"], merchant_key)
+    else:
+        upsert_transfer_override(current_user["id"], merchant_key, body.is_transfer)
+
+    ins.invalidate_user_cache(current_user["id"])
+    return {"ok": True, "merchant": merchant_key, "is_transfer": body.is_transfer}
 
 
 @router.post("/{transaction_id}/dismiss-duplicate")

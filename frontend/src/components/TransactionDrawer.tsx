@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { X, Pencil, Tag, Repeat, AlertTriangle, Trash2, Check, EyeOff } from 'lucide-react'
+import { X, Pencil, Tag, Repeat, AlertTriangle, Trash2, Check, EyeOff, ArrowLeftRight } from 'lucide-react'
 import type { LedgerRow, RecurringRule } from '../lib/api'
 import { formatDate, formatCurrency, getCategoryColor } from '../lib/utils'
 
@@ -23,12 +23,18 @@ interface TransactionDrawerProps {
   onUnmarkRecurring: (ruleId: number) => void
   onSuppressRecurring: (transactionId: string) => void
   onDismissDuplicate: (id: string, otherId: string) => void
+  // Remember how to treat this row's counterparty: true = always a transfer,
+  // false = never (always spending), null = clear the rule (auto-detect).
+  onSetTransfer: (id: number, isTransfer: boolean | null) => void
+  // merchant_normalized -> is_transfer for the user's remembered rulings.
+  transferOverrides: Record<string, boolean>
   onDelete: (id: string) => void
   isPatchPending: boolean
   isMarkRecurringPending: boolean
   isUnmarkRecurringPending: boolean
   isSuppressRecurringPending: boolean
   isDismissDupPending: boolean
+  isSetTransferPending: boolean
   isDeletePending: boolean
 }
 
@@ -47,6 +53,9 @@ export default function TransactionDrawer({
   onUnmarkRecurring,
   onSuppressRecurring,
   onDismissDuplicate,
+  onSetTransfer,
+  transferOverrides,
+  isSetTransferPending,
   onDelete,
   isPatchPending,
   isMarkRecurringPending,
@@ -138,6 +147,14 @@ export default function TransactionDrawer({
   const categoryOverrideForMerchant = row.merchant_normalized
     ? categoryOverrides[row.merchant_normalized]
     : undefined
+
+  // Transfer treatment: a rule keyed on this counterparty, or Auto when none.
+  const transferRule = row.merchant_normalized
+    ? transferOverrides[row.merchant_normalized]
+    : undefined
+  const transferMode: 'auto' | 'transfer' | 'spending' =
+    transferRule === true ? 'transfer' : transferRule === false ? 'spending' : 'auto'
+  const noMerchant = !row.merchant_normalized
 
   const labelStyle: React.CSSProperties = {
     fontSize: 11,
@@ -696,6 +713,63 @@ export default function TransactionDrawer({
             >
               {row.is_excluded ? 'Excluded' : 'Exclude'}
             </button>
+          </div>
+
+          {/* Transfer treatment — Auto / Transfer / Spending, remembered per payee */}
+          <div
+            style={{
+              padding: '10px 12px',
+              borderRadius: 8,
+              border: '1px solid var(--color-border)',
+              background: transferMode !== 'auto' ? 'var(--color-surface-raise)' : 'transparent',
+              marginBottom: 16,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+              <ArrowLeftRight size={14} style={{ color: transferMode !== 'auto' ? 'var(--color-accent)' : 'var(--color-text-muted)' }} />
+              <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--color-text-primary)' }}>
+                Transfer treatment
+              </span>
+            </div>
+            <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
+              {([
+                { key: 'auto', label: 'Auto', value: null },
+                { key: 'transfer', label: 'Transfer', value: true },
+                { key: 'spending', label: 'Spending', value: false },
+              ] as const).map((opt) => {
+                const active = transferMode === opt.key
+                return (
+                  <button
+                    key={opt.key}
+                    onClick={() => onSetTransfer(row.id, opt.value)}
+                    disabled={isSetTransferPending || noMerchant || active}
+                    style={{
+                      flex: 1,
+                      fontSize: 12,
+                      fontWeight: 500,
+                      padding: '5px 0',
+                      borderRadius: 6,
+                      cursor: active || noMerchant ? 'default' : 'pointer',
+                      border: `1px solid ${active ? 'var(--color-accent)' : 'var(--color-border)'}`,
+                      background: active ? 'var(--color-accent)' : 'var(--color-surface)',
+                      color: active ? 'var(--color-accent-contrast)' : 'var(--color-text-secondary)',
+                      opacity: isSetTransferPending || noMerchant ? 0.6 : 1,
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                )
+              })}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--color-text-muted)', lineHeight: 1.4 }}>
+              {noMerchant
+                ? 'Needs a merchant to set a rule.'
+                : transferMode === 'transfer'
+                  ? `Always hidden from spending for ${row.merchant_normalized}.`
+                  : transferMode === 'spending'
+                    ? `Always counted as spending for ${row.merchant_normalized}.`
+                    : `Auto-detected. Sets a rule for every transaction from ${row.merchant_normalized}.`}
+            </div>
           </div>
 
           {/* Duplicate review callout */}

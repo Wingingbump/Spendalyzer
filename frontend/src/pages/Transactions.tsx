@@ -350,6 +350,25 @@ export default function Transactions() {
     queryFn: () => merchantsApi.categoryOverrides(),
   })
 
+  // Per-counterparty transfer rulings (merchant -> is_transfer). Drives the
+  // drawer's Auto / Transfer / Spending control.
+  const { data: transferOverrides = {} } = useQuery({
+    queryKey: ['transfer-overrides'],
+    queryFn: () => transactionsApi.transferOverrides(),
+  })
+
+  const setTransferMutation = useMutation({
+    mutationFn: ({ id, isTransfer }: { id: number; isTransfer: boolean | null }) =>
+      transactionsApi.setTransfer(id, isTransfer),
+    onSuccess: () => {
+      // A row moving in/out of "transfer" changes spending totals everywhere.
+      qc.invalidateQueries({ queryKey: ['ledger'] })
+      qc.invalidateQueries({ queryKey: ['transfer-overrides'] })
+      qc.invalidateQueries({ queryKey: ['overview'] })
+      qc.invalidateQueries({ queryKey: ['tracker'] })
+    },
+  })
+
   // Permanent merchant rename rules (raw merchant name -> display name).
   const { data: renameRules = {} } = useQuery({
     queryKey: ['merchant-overrides'],
@@ -1295,6 +1314,9 @@ export default function Transactions() {
             onUnmarkRecurring={(ruleId) => unmarkRecurringMutation.mutate(ruleId)}
             onSuppressRecurring={(txId) => suppressRecurringMutation.mutate(txId)}
             onDismissDuplicate={(id, otherId) => dismissDupMutation.mutate({ id, otherId })}
+            onSetTransfer={(id, isTransfer) => setTransferMutation.mutate({ id, isTransfer })}
+            transferOverrides={transferOverrides}
+            isSetTransferPending={setTransferMutation.isPending}
             onDelete={(id) => setConfirmDelete(id)}
             isPatchPending={patchMutation.isPending}
             isMarkRecurringPending={markRecurringMutation.isPending}

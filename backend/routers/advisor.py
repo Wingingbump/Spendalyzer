@@ -1177,15 +1177,16 @@ def tracker(current_user: dict = Depends(get_current_user)):
             if days_left > 0 and remaining > 0 and months_left > 0:
                 g["monthly_needed"] = round(remaining / months_left, 2)
 
-    # ── MTD filtered df ───────────────────────────────────────────────────────
-    mtd_df = pd.DataFrame()
-    if not df.empty:
-        mtd_df = df[
-            (df["date"] >= month_start) &
-            (~df.get("is_transfer", pd.Series(False, index=df.index)).fillna(False)) &
-            (~df.get("is_duplicate", pd.Series(False, index=df.index)).fillna(False)) &
-            (df["type"] == "debit")
-        ].copy()
+    # ── Canonical spending frame ──────────────────────────────────────────────
+    # Single source for every spend figure below (MTD total, top transactions,
+    # monthly trend) so Tracker matches the Overview and the budget "spent" number.
+    # get_spending() drops transfers, duplicates, and user-excluded rows and nets
+    # reimbursements against their category — a raw type=="debit" filter would not.
+    spending = get_spending(df) if not df.empty else pd.DataFrame()
+    mtd_df = (
+        spending[spending["date"] >= month_start].copy()
+        if not spending.empty else pd.DataFrame()
+    )
 
     # ── Budgets with top transactions + pace ──────────────────────────────────
     budgets = _fetch_budgets_with_spend(user_id, df)
@@ -1216,13 +1217,10 @@ def tracker(current_user: dict = Depends(get_current_user)):
                     yr, mo = today.year, today.month - offset
                 mo_start = pd.Timestamp(date(yr, mo, 1))
                 mo_end = pd.Timestamp(date(yr, mo, _cal.monthrange(yr, mo)[1]))
-                mo_df = df[
-                    (df["date"] >= mo_start) & (df["date"] <= mo_end) &
-                    (df["category"].str.lower() == cat.lower()) &
-                    (~df.get("is_transfer", pd.Series(False, index=df.index)).fillna(False)) &
-                    (~df.get("is_duplicate", pd.Series(False, index=df.index)).fillna(False)) &
-                    (df["type"] == "debit")
-                ] if not df.empty else pd.DataFrame()
+                mo_df = spending[
+                    (spending["date"] >= mo_start) & (spending["date"] <= mo_end) &
+                    (spending["category"].str.lower() == cat.lower())
+                ] if not spending.empty else pd.DataFrame()
                 monthly.append({
                     "month": f"{yr}-{mo:02d}",
                     "total": round(float(mo_df["amount"].sum()), 2) if not mo_df.empty else 0.0,

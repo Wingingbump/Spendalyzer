@@ -241,6 +241,7 @@ function BudgetCard({ budget }: { budget: TrackerBudget }) {
   const pct = budget.amount > 0 ? (budget.spent / budget.amount) * 100 : 0
   const pacePct = budget.amount > 0 ? (budget.pace / budget.amount) * 100 : 0
   const color = paceColor(pacePct)
+  const remaining = budget.amount - budget.spent
 
   const trend = budget.monthly_trend
   const prev = trend.length >= 2 ? trend[trend.length - 2].total : null
@@ -273,6 +274,14 @@ function BudgetCard({ budget }: { budget: TrackerBudget }) {
             <span style={{ fontSize: 18, fontWeight: 700, color, fontFamily: 'monospace' }}>
               {pct.toFixed(0)}%
             </span>
+            <p style={{
+              fontSize: 11, marginTop: 1, fontFamily: 'monospace',
+              color: remaining >= 0 ? 'var(--color-text-muted)' : 'var(--color-negative)',
+            }}>
+              {remaining >= 0
+                ? `${formatCurrency(remaining)} left`
+                : `${formatCurrency(-remaining)} over`}
+            </p>
           </div>
         </div>
 
@@ -695,37 +704,47 @@ export default function Tracker() {
       </div>
 
       {/* Summary strip */}
-      {data && (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
-          {[
-            {
-              label: 'Spent this month',
-              value: formatCurrency(data.summary.mtd_spent),
-              sub: `${data.summary.days_elapsed} of ${data.summary.days_in_month} days`,
-            },
-            {
-              label: 'Month-end pace',
-              value: formatCurrency(data.summary.mtd_pace),
-              sub: data.summary.total_budget > 0 ? `vs ${formatCurrency(data.summary.total_budget)} budget` : 'no budget set',
-            },
-            {
-              label: 'Monthly recurring',
-              value: formatCurrency(data.summary.total_recurring_monthly),
-              sub: `${data.recurring.length} charges detected`,
-            },
-          ].map((stat) => (
-            <div key={stat.label} className="rounded-xl px-4 py-3" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}>
-              <p style={{ fontSize: 10, fontWeight: 600, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 4 }}>
-                {stat.label}
-              </p>
-              <p style={{ fontSize: 18, fontWeight: 700, color: 'var(--color-text-primary)', fontFamily: 'monospace', lineHeight: 1 }}>
-                {stat.value}
-              </p>
-              <p style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 3 }}>{stat.sub}</p>
-            </div>
-          ))}
-        </div>
-      )}
+      {data && (() => {
+        const { mtd_spent, mtd_pace, total_budget, days_in_month, days_elapsed } = data.summary
+        const daysLeft = Math.max(0, days_in_month - days_elapsed)
+        const paceOver = total_budget > 0 && mtd_pace > total_budget
+        const stats: { label: string; value: string; sub: string; valueColor?: string; subColor?: string }[] = [
+          {
+            label: 'Spent this month',
+            value: formatCurrency(mtd_spent),
+            sub: `${days_elapsed} of ${days_in_month} days · ${daysLeft} left`,
+          },
+          {
+            label: 'Month-end pace',
+            value: formatCurrency(mtd_pace),
+            valueColor: total_budget > 0 ? (paceOver ? 'var(--color-negative)' : 'var(--color-positive)') : undefined,
+            sub: total_budget > 0
+              ? (paceOver ? `${formatCurrency(mtd_pace - total_budget)} over budget` : `${formatCurrency(total_budget - mtd_pace)} under budget`)
+              : 'no budget set',
+            subColor: total_budget > 0 ? (paceOver ? 'var(--color-negative)' : 'var(--color-positive)') : undefined,
+          },
+          {
+            label: 'Monthly recurring',
+            value: formatCurrency(data.summary.total_recurring_monthly),
+            sub: `${data.recurring.length} charges detected`,
+          },
+        ]
+        return (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
+            {stats.map((stat) => (
+              <div key={stat.label} className="rounded-xl px-4 py-3" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}>
+                <p style={{ fontSize: 10, fontWeight: 600, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 4 }}>
+                  {stat.label}
+                </p>
+                <p style={{ fontSize: 18, fontWeight: 700, color: stat.valueColor ?? 'var(--color-text-primary)', fontFamily: 'monospace', lineHeight: 1 }}>
+                  {stat.value}
+                </p>
+                <p style={{ fontSize: 11, color: stat.subColor ?? 'var(--color-text-muted)', marginTop: 3 }}>{stat.sub}</p>
+              </div>
+            ))}
+          </div>
+        )
+      })()}
 
       {/* Tab bar */}
       <div className="flex gap-1 mb-5 p-1 rounded-xl" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', width: 'fit-content' }}>

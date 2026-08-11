@@ -1,6 +1,7 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import json
 import logging
 import datetime
 from collections import defaultdict
@@ -112,6 +113,51 @@ def is_content_duplicate(t: dict, content_index: dict) -> tuple[bool, str]:
     return False, ""
 
 
+def _field(obj, key):
+    """Read a field from a Plaid model (dict-style) or plain dict, defensively."""
+    try:
+        return obj[key]
+    except Exception:
+        return getattr(obj, key, None)
+
+
+def extract_enrichment(t) -> dict:
+    """Pull Plaid enrichment fields off a transaction into plain JSON-safe values.
+
+    Plaid model enums (e.g. TRANSFER_OUT, VERY_HIGH) stringify cleanly. Every
+    field is optional — older items or unentitled plans may omit PFC or
+    counterparties, so each read is guarded.
+    """
+    pfc = _field(t, "personal_finance_category")
+    primary = detailed = confidence = None
+    if pfc is not None:
+        primary = _field(pfc, "primary")
+        detailed = _field(pfc, "detailed")
+        confidence = _field(pfc, "confidence_level")
+
+    counterparties = []
+    for c in (_field(t, "counterparties") or []):
+        name = _field(c, "name")
+        ctype = _field(c, "type")
+        if name or ctype:
+            counterparties.append({
+                "name": name,
+                "type": str(ctype) if ctype is not None else None,
+            })
+
+    def _s(v):
+        return str(v) if v is not None else None
+
+    return {
+        "pfc_primary":         _s(primary),
+        "pfc_detailed":        _s(detailed),
+        "pfc_confidence":      _s(confidence),
+        "payment_channel":     _s(_field(t, "payment_channel")),
+        "plaid_merchant_name": _field(t, "merchant_name"),
+        "counterparties":      json.dumps(counterparties) if counterparties else None,
+    }
+
+
 def fetch_all_transactions(client, access_token: str, start_date, end_date) -> list:
     all_transactions = []
     offset = 0
@@ -124,7 +170,10 @@ def fetch_all_transactions(client, access_token: str, start_date, end_date) -> l
                 end_date=end_date,
                 options=TransactionsGetRequestOptions(
                     count=500,
-                    offset=offset
+                    offset=offset,
+                    # Personal Finance Category is the primary signal for
+                    # transfer/income/spend classification downstream.
+                    include_personal_finance_category=True,
                 )
             )
             response = client.transactions_get(request)
@@ -194,6 +243,7 @@ def save_transactions(transactions: list, institution: str,
         "institution":      account_map.get(t["account_id"], {}).get("institution_name", institution),
         "plaid_account_id": t["account_id"],
         "user_id":          user_id,
+        **extract_enrichment(t),
     } for t in new_transactions]
 
     upsert_transactions(records)

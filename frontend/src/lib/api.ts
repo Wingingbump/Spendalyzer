@@ -325,6 +325,15 @@ export const transactionsApi = {
 
   dismissDuplicate: (id: string, otherId: string) =>
     api.post<{ ok: boolean }>(`/transactions/${id}/dismiss-duplicate`, { other_id: otherId }).then((r) => r.data),
+
+  // Remember how to treat this transaction's counterparty. true = always a
+  // transfer, false = never, null = clear the rule (revert to auto-detection).
+  setTransfer: (id: number, isTransfer: boolean | null) =>
+    api.post<{ ok: boolean }>(`/transactions/${id}/transfer`, { is_transfer: isTransfer }).then((r) => r.data),
+
+  // { merchant_normalized: is_transfer } for the user's remembered rulings.
+  transferOverrides: () =>
+    api.get<Record<string, boolean>>('/transactions/transfer-overrides').then((r) => r.data),
 }
 
 // ─── Ledger ──────────────────────────────────────────────────────────────────
