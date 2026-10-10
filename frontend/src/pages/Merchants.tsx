@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -93,6 +94,7 @@ export default function Merchants({ embedded = false }: { embedded?: boolean }) 
   const { theme } = useTheme()
   const isMobile = useIsMobile()
   const chartColors = theme === 'dark' ? CHART_COLORS_DARK : CHART_COLORS_LIGHT
+  const navigate = useNavigate()
   const [selectedMerchant, setSelectedMerchant] = useState<string>('')
   const [applyDialog, setApplyDialog] = useState<ApplyDialog | null>(null)
   const [range, setRange] = useState('90d')
@@ -334,17 +336,32 @@ export default function Merchants({ embedded = false }: { embedded?: boolean }) 
           style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}
         >
           <div
-            className="px-4 py-3"
+            className="px-4 py-3 flex items-start justify-between gap-3"
             style={{ borderBottom: '1px solid var(--color-border)' }}
           >
-            <p style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-primary)' }}>
-              {selectedMerchant}
-            </p>
-            {!loadingDetail && (
-              <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 2 }}>
-                {merchantDetail.length} transactions · {formatCurrency(merchantDetail.reduce((s, t) => s + t.amount, 0))} total
+            <div>
+              <p style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                {selectedMerchant}
               </p>
-            )}
+              {!loadingDetail && (
+                <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 2 }}>
+                  {merchantDetail.length} transactions · {formatCurrency(merchantDetail.reduce((s, t) => s + t.amount, 0))} total
+                </p>
+              )}
+            </div>
+            <button
+              onClick={() => navigate(
+                `/transactions?merchant=${encodeURIComponent(selectedMerchant)}&range=${encodeURIComponent(range)}`
+              )}
+              style={{
+                flexShrink: 0, fontSize: 12, padding: '5px 10px', borderRadius: 7,
+                background: 'var(--color-surface-raise)', border: '1px solid var(--color-border)',
+                color: 'var(--color-text-secondary)', cursor: 'pointer',
+              }}
+              title="Open these in the ledger, where you can recategorise or edit them"
+            >
+              Open in ledger →
+            </button>
           </div>
           <div className="overflow-x-auto">
             <table>

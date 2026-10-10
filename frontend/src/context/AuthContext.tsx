@@ -73,6 +73,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   )
 }
 
+/**
+ * Whether the LLM-backed advisor is switched on server-side.
+ *
+ * Defaults to false while the user is still loading or when the server omits
+ * the flag, so the advisor UI never flashes in before we know it's available.
+ */
+export function useAdvisorEnabled(): boolean {
+  const { user } = useAuth()
+  return user?.features?.advisor === true
+}
+
 export function useAuth(): AuthContextValue {
   return useContext(AuthContext)
 }

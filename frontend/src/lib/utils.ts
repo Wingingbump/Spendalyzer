@@ -12,6 +12,20 @@ export function cn(...inputs: ClassValue[]): string {
  * Format a number as USD currency string
  * e.g. 1234.56 → "$1,234.56"
  */
+/**
+ * Compact currency for a chart axis, scaled to the value.
+ *
+ * A fixed `$${v / 1000}k` suits the monthly chart (thousands) but collapses the
+ * day-of-week chart (tens of dollars) into a column of "$0k" labels. Pick the
+ * unit from the magnitude instead.
+ */
+export function formatAxisCurrency(value: number): string {
+  const abs = Math.abs(value)
+  if (abs >= 1000) return `$${(value / 1000).toFixed(abs >= 10000 ? 0 : 1)}k`
+  if (abs >= 1) return `$${Math.round(value)}`
+  return value === 0 ? '$0' : `$${value.toFixed(2)}`
+}
+
 export function formatCurrency(amount: number): string {
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
