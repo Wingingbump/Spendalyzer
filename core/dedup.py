@@ -9,11 +9,16 @@ from datetime import timedelta
 from rapidfuzz import fuzz
 from dotenv import load_dotenv
 from core.db import load_dedup_cache, save_dedup_cache, upsert_dedup_entry
+from core import ai_budget
 
 load_dotenv()
 
 DEDUP_CACHE_PATH = "data/dedup_cache.csv"
-client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+client = anthropic.Anthropic(
+    api_key=os.getenv("ANTHROPIC_API_KEY"),
+    timeout=ai_budget.CALL_TIMEOUT_SECONDS,
+    max_retries=ai_budget.CALL_MAX_RETRIES,
+)
 
 # ── Transfer keywords & config ─────────────────────────────────────────────────
 
@@ -531,6 +536,11 @@ def apply_dedup(df: pd.DataFrame) -> pd.DataFrame:
         if cached_pair:
             is_dup = cached_pair["is_duplicate"]
             reason = cached_pair["reason"]
+        elif not ai_budget.claim():
+            # Over this rebuild's AI budget. Leave the pair unresolved and
+            # uncached — flag_potential_duplicates still surfaces it to the user,
+            # and the next rebuild will arbitrate it.
+            is_dup, reason = False, "ai_deferred"
         else:
             try:
                 print(f"AI arbitrating: '{row_a['name']}' ({row_a['institution']}) "

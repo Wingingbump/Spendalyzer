@@ -9,6 +9,7 @@ from backend.auth import (
     create_access_token, create_refresh_token, ACCESS_TOKEN_EXPIRE, _secure,
 )
 from backend.dependencies import get_current_user
+from backend.features import advisor_enabled
 from backend.email import send_verification_email, send_password_reset_email
 from backend.limiter import limiter
 from core.crypto import hash_password, verify_password
@@ -214,4 +215,11 @@ def refresh(request: Request, response: Response):
 
 @router.get("/me")
 def me(current_user: dict = Depends(get_current_user)):
-    return {"id": current_user["id"], "username": current_user["username"]}
+    # `features` lets the client hide UI for anything turned off server-side.
+    # The server still enforces each flag on its own endpoints — this is purely
+    # so the nav doesn't offer a route that would 503.
+    return {
+        "id": current_user["id"],
+        "username": current_user["username"],
+        "features": {"advisor": advisor_enabled()},
+    }

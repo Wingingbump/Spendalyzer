@@ -104,6 +104,47 @@ class TestSummaryEndpoint:
         assert "NaN" not in text
         assert "Infinity" not in text
 
+    def test_calendar_month_figures_ignore_the_range_filter(self, client):
+        """this_month/last_month/delta describe calendar months, so narrowing the
+        range filter must not truncate them. A 30d range reaches only part way
+        into last month; last_month has to stay the full month regardless."""
+        today = pd.Timestamp.today().normalize()
+        last_month_end = today.replace(day=1) - pd.Timedelta(days=1)
+        first_of_last_month = last_month_end.replace(day=1)
+
+        rows = [{"id": "cur", "date": today, "amount": 50.0}]
+        # $10/day across the whole of last month.
+        for i, d in enumerate(pd.date_range(first_of_last_month, last_month_end)):
+            rows.append({"id": f"prev{i}", "date": d, "amount": 10.0})
+        expected_last_month = round(10.0 * len(pd.date_range(first_of_last_month,
+                                                             last_month_end)), 2)
+
+        with patch("backend.routers.insights.ins.load_data",
+                   return_value=_make_df(rows)):
+            wide = client.get("/insights/summary", params={"range": "all"}).json()
+            narrow = client.get("/insights/summary", params={"range": "30d"}).json()
+
+        assert wide["last_month"] == expected_last_month
+        assert narrow["last_month"] == expected_last_month
+        assert narrow["this_month"] == wide["this_month"] == 50.0
+        assert narrow["delta"] == wide["delta"]
+
+    def test_range_filter_still_applies_to_window_figures(self, client):
+        """The range filter is not ignored wholesale — total_spent still follows
+        it, otherwise picking a range would do nothing at all."""
+        today = pd.Timestamp.today().normalize()
+        rows = [
+            {"id": "recent", "date": today - pd.Timedelta(days=2), "amount": 25.0},
+            {"id": "old", "date": today - pd.Timedelta(days=200), "amount": 400.0},
+        ]
+        with patch("backend.routers.insights.ins.load_data",
+                   return_value=_make_df(rows)):
+            wide = client.get("/insights/summary", params={"range": "all"}).json()
+            narrow = client.get("/insights/summary", params={"range": "30d"}).json()
+
+        assert wide["total_spent"] == 425.0
+        assert narrow["total_spent"] == 25.0
+
     def test_total_spent_sums_correctly(self, client):
         rows = [
             {"id": "tx1", "amount": 30.0},

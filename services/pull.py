@@ -1,6 +1,14 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Make console logging tolerant of non-cp1252 chars (emoji memos, arrows) so a
+# stray character in a transaction name never crashes a log call on Windows.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 import json
 import logging
 import datetime
@@ -108,7 +116,7 @@ def is_content_duplicate(t: dict, content_index: dict) -> tuple[bool, str]:
 
         sim = fuzz.token_sort_ratio(tx_name, c["name"])
         if sim >= 80:
-            return True, f"pending→posted: existing pending matched (±{days_diff}d, name sim {sim}%)"
+            return True, f"pending->posted: existing pending matched (+/-{days_diff}d, name sim {sim}%)"
 
     return False, ""
 
@@ -185,6 +193,16 @@ def fetch_all_transactions(client, access_token: str, start_date, end_date) -> l
             if len(all_transactions) >= total:
                 break
 
+            # Plaid reported more rows than it handed us, but handed us nothing
+            # this time. Advancing the offset by 0 would re-issue the identical
+            # request forever, so stop and work with what we have.
+            if not transactions:
+                log.warning(
+                    f"Plaid returned an empty page at offset {offset} with "
+                    f"{len(all_transactions)}/{total} fetched — stopping pagination"
+                )
+                break
+
             offset += len(transactions)
 
         except plaid.ApiException as e:
@@ -210,12 +228,18 @@ def save_transactions(transactions: list, institution: str,
     registered_account_ids = set(account_map.keys())
     category_map = load_category_map(user_id)
     new_transactions = []
+    enrich_updates = []
     skipped_content = 0
 
     for t in transactions:
-        if t["transaction_id"] in existing_ids:
-            continue
         if t["account_id"] not in registered_account_ids:
+            continue
+        if t["transaction_id"] in existing_ids:
+            # Already stored — don't re-insert, but refresh Plaid enrichment so
+            # history synced before PFC existed gets backfilled on a re-sync.
+            enr = extract_enrichment(t)
+            if any(v is not None for v in enr.values()):
+                enrich_updates.append({"id": t["transaction_id"], **enr})
             continue
         if content_index:
             is_dup, reason = is_content_duplicate(t, content_index)
@@ -224,6 +248,11 @@ def save_transactions(transactions: list, institution: str,
                 skipped_content += 1
                 continue
         new_transactions.append(t)
+
+    if enrich_updates:
+        from core.db import update_transaction_enrichment
+        update_transaction_enrichment(enrich_updates, user_id)
+        log.info(f"{institution}: refreshed enrichment on {len(enrich_updates)} existing transaction(s)")
 
     if skipped_content:
         log.info(f"{institution}: skipped {skipped_content} content-duplicate(s)")
@@ -263,7 +292,7 @@ def save_transactions(transactions: list, institution: str,
     return len(new_transactions)
 
 
-def main(user_id: int, full_sync: bool = False):
+def main(user_id: int, full_sync: bool = False) -> int:
     from core.db import get_connected_account_tokens, get_latest_transaction_date, set_last_synced_at
     seed_category_map(user_id)
 
@@ -295,7 +324,7 @@ def main(user_id: int, full_sync: bool = False):
     accounts = get_connected_account_tokens(user_id)
     if not accounts:
         log.warning("No connected accounts found — add accounts in Settings")
-        return
+        return 0
 
     from core.db import get_plaid_account_map, list_plaid_accounts, upsert_plaid_accounts
     from plaid.model.accounts_get_request import AccountsGetRequest
@@ -368,7 +397,7 @@ def main(user_id: int, full_sync: bool = False):
             )
             stale_ids = [p["id"] for p in pending_in_db if p["id"] not in plaid_ids_in_window]
             if stale_ids:
-                deleted = delete_transactions_by_ids(stale_ids)
+                deleted = delete_transactions_by_ids(stale_ids, user_id)
                 log.info(f"{account['name']}: removed {deleted} stale pending transaction(s)")
                 # Remove from existing_ids so their successors can be inserted
                 existing_ids -= set(stale_ids)
@@ -382,6 +411,7 @@ def main(user_id: int, full_sync: bool = False):
 
     log.info(f"Done — {total_new} total new transactions saved")
     set_last_synced_at(user_id, datetime.datetime.now().strftime("%Y-%m-%d %H:%M"))
+    return total_new
 
 if __name__ == "__main__":
     main()

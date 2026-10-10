@@ -1,5 +1,6 @@
 import os
 import secrets
+import threading
 import psycopg2
 import psycopg2.pool
 import psycopg2.extras
@@ -11,6 +12,8 @@ if _raw_url.startswith("postgres://"):
     _raw_url = _raw_url.replace("postgres://", "postgresql://", 1)
 
 _pool: psycopg2.pool.ThreadedConnectionPool | None = None
+_migrated = False
+_migrate_lock = threading.Lock()
 
 
 def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
@@ -22,7 +25,33 @@ def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
                 "Add it to your .env file: DATABASE_URL=postgresql://user:pass@host/dbname"
             )
         _pool = psycopg2.pool.ThreadedConnectionPool(1, 10, dsn=_raw_url)
+    _ensure_migrated()
     return _pool
+
+
+def _ensure_migrated() -> None:
+    """Run the schema migrations once, on first use of the pool.
+
+    Deliberately not done at import time. `import core.db` is reached from almost
+    every module, and migrating there means merely importing anything — a unit
+    test over a pure function, `--help` on a script — demands a reachable
+    database. Doing it on first connection keeps the same guarantee (nothing
+    queries an unmigrated schema) without that.
+    """
+    global _migrated
+    if _migrated:
+        return
+    with _migrate_lock:
+        if _migrated:
+            return
+        # Set before running: _run_migrations() opens connections of its own, which
+        # re-enter _get_pool(), and they must not recurse back into here.
+        _migrated = True
+        try:
+            _run_migrations()
+        except Exception:
+            _migrated = False
+            raise
 
 
 class _Conn:
@@ -642,6 +671,23 @@ def _run_migrations():
         conn.execute(
             "CREATE INDEX IF NOT EXISTS nudges_user_idx ON nudges (user_id, created_at DESC)"
         )
+        # Identity of *what a nudge is about* ("category_spike:Food:2026-10"), so a
+        # re-run updates the existing row instead of appending a near-identical one.
+        # last_seen_at records the most recent run that still produced it, which is
+        # what staleness is really about — created_at would reap (and so un-dismiss)
+        # a nudge the detectors are still generating.
+        conn.execute("ALTER TABLE nudges ADD COLUMN IF NOT EXISTS dedup_key TEXT")
+        conn.execute("ALTER TABLE nudges ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ DEFAULT NOW()")
+        conn.execute("UPDATE nudges SET last_seen_at = created_at WHERE last_seen_at IS NULL")
+        # Pre-dedup_key rows can't have a key reconstructed, and a NULL key is
+        # distinct from every other NULL in a unique index — so they'd be exempt
+        # from deduplication forever. Drop them once; the next sync regenerates
+        # them with keys. (Any dismissal of one of those has to be redone once.)
+        conn.execute("DELETE FROM nudges WHERE dedup_key IS NULL")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS nudges_user_dedup_key_idx "
+            "ON nudges (user_id, dedup_key)"
+        )
 
         # ── Row-Level Security ───────────────────────────────────────────────────
         # RLS isolates tenants at the database layer so a forgotten WHERE clause
@@ -741,7 +787,7 @@ def _run_migrations():
                 conn.execute("DELETE FROM credentials WHERE key = 'app_password'")
 
 
-_run_migrations()
+# Migrations run lazily — see _ensure_migrated(), called from _get_pool().
 
 
 # ── Users ────────────────────────────────────────────────────────────────────────
@@ -994,19 +1040,26 @@ def get_pending_transactions_in_window(user_id: int, plaid_account_ids: list[str
     return [dict(r) for r in rows]
 
 
-def delete_transactions_by_ids(transaction_ids: list[str]) -> int:
-    """Hard-delete transactions by ID. Used to remove stale pending entries."""
+def delete_transactions_by_ids(transaction_ids: list[str], user_id: int) -> int:
+    """Hard-delete a user's transactions by ID. Used to remove stale pending entries.
+
+    Runs under the user's RLS context and filters on user_id explicitly: this is a
+    bulk delete driven by a list of ids, so a bug upstream that mixed in an id from
+    another tenant would otherwise delete their row.
+    """
     if not transaction_ids:
         return 0
     with get_conn() as conn:
-        conn.execute("SET LOCAL app.current_user_id = 'bypass'")
+        conn.execute("SET LOCAL app.current_user_id = %s", (str(user_id),))
         placeholders = ",".join(["%s"] * len(transaction_ids))
         # Delete overrides first (FK), then the transactions
-        conn.execute(f"DELETE FROM overrides WHERE transaction_id IN ({placeholders})",
-                     transaction_ids)
+        conn.execute(
+            f"DELETE FROM overrides WHERE user_id = %s AND transaction_id IN ({placeholders})",
+            (user_id, *transaction_ids),
+        )
         result = conn.execute(
-            f"DELETE FROM transactions WHERE id IN ({placeholders})",
-            transaction_ids
+            f"DELETE FROM transactions WHERE user_id = %s AND id IN ({placeholders})",
+            (user_id, *transaction_ids),
         )
     return result.rowcount
 
@@ -1015,6 +1068,35 @@ _ENRICHMENT_COLS = (
     "pfc_primary", "pfc_detailed", "pfc_confidence",
     "payment_channel", "plaid_merchant_name", "counterparties",
 )
+
+
+def update_transaction_enrichment(records: list[dict], user_id: int):
+    """Backfill/refresh Plaid enrichment on transactions that already exist.
+
+    The normal sync path skips transactions whose id is already stored, so PFC and
+    counterparty data would never land on history synced before enrichment existed.
+    This updates ONLY the enrichment columns (never amount/date/name/pending), and
+    COALESCE means a NULL from a thin payload never wipes a stored value.
+    Each record must carry `id` plus the enrichment columns.
+
+    Scoped to the user on both the RLS context and the WHERE clause — the ids come
+    from a Plaid payload, so they are external input to a bulk UPDATE.
+    """
+    if not records:
+        return
+    records = [{**r, "user_id": user_id} for r in records]
+    with get_conn() as conn:
+        conn.execute("SET LOCAL app.current_user_id = %s", (str(user_id),))
+        conn.executemany("""
+            UPDATE transactions SET
+                pfc_primary         = COALESCE(%(pfc_primary)s,         pfc_primary),
+                pfc_detailed        = COALESCE(%(pfc_detailed)s,        pfc_detailed),
+                pfc_confidence      = COALESCE(%(pfc_confidence)s,      pfc_confidence),
+                payment_channel     = COALESCE(%(payment_channel)s,     payment_channel),
+                plaid_merchant_name = COALESCE(%(plaid_merchant_name)s, plaid_merchant_name),
+                counterparties      = COALESCE(%(counterparties)s,      counterparties)
+            WHERE id = %(id)s AND user_id = %(user_id)s
+        """, records)
 
 
 def upsert_transactions(transactions: list[dict]):
@@ -1067,6 +1149,9 @@ def save_override(user_id: int, transaction_id: str, category: str = None,
                 amount     = COALESCE(EXCLUDED.amount,    overrides.amount),
                 notes      = COALESCE(EXCLUDED.notes,     overrides.notes),
                 excluded   = COALESCE(%s,                 overrides.excluded),
+                -- Backfill ownership on any row written before user_id existed,
+                -- so RLS can see it and account deletion cascades to it.
+                user_id    = COALESCE(overrides.user_id,  EXCLUDED.user_id),
                 updated_at = NOW()
         """, (transaction_id, user_id, category, amount, notes, excluded, excluded))
 
@@ -1083,11 +1168,18 @@ def insert_manual_transaction(user_id: int, name: str, date: str, amount: float,
             VALUES (%s, %s, %s, %s, %s, FALSE, 'Manual', %s, TRUE)
         """, (tx_id, date, name, amount, category, user_id))
         if notes:
+            # user_id is required: the overrides RLS policy is WITH CHECK
+            # (user_id = current_user_id), and this runs under the user's context
+            # rather than 'bypass' — omitting it fails the check and rolls back the
+            # transaction insert above with it.
             conn.execute("""
-                INSERT INTO overrides (transaction_id, notes, updated_at)
-                VALUES (%s, %s, NOW())
-                ON CONFLICT (transaction_id) DO UPDATE SET notes = EXCLUDED.notes, updated_at = NOW()
-            """, (tx_id, notes))
+                INSERT INTO overrides (transaction_id, user_id, notes, updated_at)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (transaction_id) DO UPDATE SET
+                    notes      = EXCLUDED.notes,
+                    user_id    = COALESCE(overrides.user_id, EXCLUDED.user_id),
+                    updated_at = NOW()
+            """, (tx_id, user_id, notes))
     return tx_id
 
 
@@ -2078,8 +2170,10 @@ def update_advice_reaction(user_id: int, advice_id: int,
         """, (reaction, outcome_notes, advice_id, user_id))
 
 
-# Prune stale tokens at import time
-cleanup_expired_refresh_tokens()
+# Token pruning is NOT done here. At import it both forced a live database on
+# anything that imports this module, and ran exactly once per process — so a
+# long-running server pruned at boot and never again, leaving refresh_tokens to
+# grow with every login. backend/main.py's hourly maintenance loop owns it now.
 
 
 # ── Nudges ───────────────────────────────────────────────────────────────────
@@ -2091,14 +2185,32 @@ def save_nudge(
     title: str,
     body: str,
     data: dict,
+    dedup_key: str,
 ) -> int:
+    """Insert a nudge, or refresh the one already filed under the same dedup_key.
+
+    The analysis pipeline re-runs after every sync and regenerates its whole
+    output, so this has to be an upsert — a plain INSERT stacked a fresh copy of
+    every nudge on each sync. On conflict the *content* is refreshed (the numbers
+    move as the month progresses) while read_at and dismissed_at are deliberately
+    left alone: a nudge the user already dismissed must not come back just because
+    the detector produced it again.
+    """
     import json as _json
     with get_conn() as conn:
         conn.execute("SET LOCAL app.current_user_id = %s", (str(user_id),))
         row = conn.execute(
-            """INSERT INTO nudges (user_id, type, severity, title, body, data)
-               VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
-            (user_id, nudge_type, severity, title, body, _json.dumps(data)),
+            """INSERT INTO nudges (user_id, type, severity, title, body, data, dedup_key)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (user_id, dedup_key) DO UPDATE SET
+                   type         = EXCLUDED.type,
+                   severity     = EXCLUDED.severity,
+                   title        = EXCLUDED.title,
+                   body         = EXCLUDED.body,
+                   data         = EXCLUDED.data,
+                   last_seen_at = NOW()
+               RETURNING id""",
+            (user_id, nudge_type, severity, title, body, _json.dumps(data), dedup_key),
         ).fetchone()
     return row["id"]
 
@@ -2138,11 +2250,17 @@ def mark_nudges_read(user_id: int) -> None:
 
 
 def clear_stale_nudges(user_id: int, days: int = 7) -> None:
-    """Remove nudges older than `days` days so re-running analysis stays fresh."""
+    """Drop nudges no analysis run has produced for `days` days.
+
+    Keyed on last_seen_at, not created_at: a nudge the detectors still generate
+    stays (and keeps its dismissal), while one whose underlying condition cleared
+    — the subscription was cancelled, the spike cooled off — ages out.
+    """
     with get_conn() as conn:
         conn.execute("SET LOCAL app.current_user_id = %s", (str(user_id),))
         conn.execute(
-            "DELETE FROM nudges WHERE user_id = %s AND created_at < NOW() - make_interval(days => %s)",
+            "DELETE FROM nudges WHERE user_id = %s "
+            "AND COALESCE(last_seen_at, created_at) < NOW() - make_interval(days => %s)",
             (user_id, days),
         )
 

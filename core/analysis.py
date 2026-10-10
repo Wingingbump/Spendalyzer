@@ -9,7 +9,11 @@ Detectors:
   5. large_transaction   — a single charge is ≥2.5× the merchant's typical amount AND ≥$40
 
 All detectors operate on clean spending (transfers and confirmed duplicates excluded).
-The pipeline is idempotent: stale nudges (>7 days) are cleared before each run.
+
+The pipeline is idempotent. Every nudge carries a `key` identifying what it is
+about; save_nudge() upserts on it, so re-running after each sync refreshes the
+existing rows rather than stacking fresh copies, and a dismissal survives the
+re-run. Nudges no run has produced for 7 days are then cleared as stale.
 """
 
 from __future__ import annotations
@@ -93,6 +97,9 @@ def detect_monthly_pace(spending: pd.DataFrame) -> list[dict]:
 
     nudges.append({
         "type": "monthly_pace",
+        # One pace nudge per calendar month, so next month gets a fresh one
+        # rather than silently reusing (and inheriting the dismissal of) this one.
+        "key": f"monthly_pace:{today:%Y-%m}",
         "severity": severity,
         "title": f"On pace for {_usd(projected)} this month",
         "body": (
@@ -153,6 +160,7 @@ def detect_category_spikes(spending: pd.DataFrame, threshold: float = 0.20) -> l
         if delta_pct >= threshold:
             nudges.append({
                 "type": "category_spike",
+                "key": f"category_spike:{cat}:{today:%Y-%m}",
                 "severity": "alert" if delta_pct >= 0.50 else "warning",
                 "title": f"{cat} up {delta_pct * 100:.0f}% this month",
                 "body": (
@@ -235,6 +243,9 @@ def detect_recurring_subs(spending: pd.DataFrame) -> list[dict]:
 
         nudges.append({
             "type": "new_recurring",
+            # Per merchant and not time-boxed: once the user has acknowledged that
+            # this subscription exists, saying so again every week is just noise.
+            "key": f"new_recurring:{merchant}",
             "severity": "info",
             "title": f"Recurring: {merchant}",
             "body": (
@@ -313,6 +324,8 @@ def detect_price_changes(spending: pd.DataFrame, threshold: float = 0.10) -> lis
         if delta_pct >= threshold:
             nudges.append({
                 "type": "price_change",
+                # Keyed on the charge that moved, so the next hike re-alerts.
+                "key": f"price_change:{merchant}:{dates[-1].isoformat()}",
                 "severity": "warning",
                 "title": f"Price increase: {merchant}",
                 "body": (
@@ -363,6 +376,8 @@ def detect_large_transactions(
             if amt >= multiplier * median and amt >= min_amount:
                 nudges.append({
                     "type": "large_transaction",
+                    # Keyed on the charge itself — one alert per unusual charge.
+                    "key": f"large_transaction:{row.get('id')}",
                     "severity": "warning",
                     "title": f"Unusual charge at {merchant}",
                     "body": (
@@ -407,6 +422,8 @@ def run_analysis(user_id: int) -> int:
             spending["date"].max().date() if not spending.empty else "N/A",
         )
 
+        # Reap anything the detectors stopped producing a week ago. Runs before
+        # the fresh pass so a nudge regenerated below keeps its dismissal.
         clear_stale_nudges(user_id, days=7)
 
         all_nudges: list[dict[str, Any]] = []
@@ -417,7 +434,7 @@ def run_analysis(user_id: int) -> int:
         all_nudges.extend(detect_large_transactions(spending))
 
         log.info(
-            "analysis: pace=%d spikes=%d recurring=%d price=%d large=%d → %d total for user %d",
+            "analysis: pace=%d spikes=%d recurring=%d price=%d large=%d -> %d total for user %d",
             len([n for n in all_nudges if n["type"] == "monthly_pace"]),
             len([n for n in all_nudges if n["type"] == "category_spike"]),
             len([n for n in all_nudges if n["type"] == "new_recurring"]),
@@ -435,6 +452,7 @@ def run_analysis(user_id: int) -> int:
                 title=n["title"],
                 body=n["body"],
                 data=n["data"],
+                dedup_key=n["key"],
             )
 
         return len(all_nudges)

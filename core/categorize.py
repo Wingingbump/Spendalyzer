@@ -35,6 +35,7 @@ def apply_categories(df):
     from core.merchant_cluster import (
         build_canonical_map, bucket_key, SIMILARITY_THRESHOLD, _GENERIC_TOKENS,
     )
+    from core import ai_budget
 
     df = df.copy()
     if "name" not in df.columns or df.empty:
@@ -49,6 +50,9 @@ def apply_categories(df):
 
     resolved: dict[str, str] = {}
     dict_updates: dict[str, str] = {}
+    # Names whose AI cleanup didn't fit in this rebuild's budget. Their heuristic
+    # stem is used for now but never cached, so a later rebuild retries them.
+    deferred: set[str] = set()
 
     for raw in uniq:
         stem = normalize_merchant(raw)
@@ -75,15 +79,19 @@ def apply_categories(df):
         if looks_low_confidence(raw, cand):
             if raw in norm_cache:
                 cand = norm_cache[raw]
-            else:
+            elif ai_budget.claim():
                 try:
                     ai = ai_clean_merchant(raw, cand)
                     if ai:
                         cand = ai
                 except Exception:
                     pass
+            else:
+                deferred.add(raw)
 
         resolved[raw] = cand
+        if raw in deferred:
+            continue  # don't cache a name we haven't actually resolved yet
         if norm_cache.get(raw) != cand:
             save_normalization_entry(raw, cand)
             norm_cache[raw] = cand

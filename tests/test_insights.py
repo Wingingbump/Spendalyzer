@@ -3,12 +3,16 @@ import pytest
 import pandas as pd
 from core.insights import (
     total_spent,
+    total_gross_spent,
     spending_by_category,
     spending_by_merchant,
+    spending_by_month,
+    spending_by_institution,
     spending_by_dow,
     biggest_purchase,
     most_visited_merchant,
     biggest_spending_day,
+    transaction_count,
     clean_dict,
 )
 
@@ -49,6 +53,43 @@ def make_empty_df() -> pd.DataFrame:
         "category", "merchant_normalized", "institution", "name",
         "pending", "plaid_account_id", "notes",
     ])
+
+
+class TestGrossVsNetReimbursements:
+    def test_gross_ignores_reimbursements_net_subtracts_them(self):
+        df = make_spending_df([
+            {"amount": 100.0, "category": "Food"},
+            {"amount": -30.0, "type": "credit", "is_reimbursement": True, "category": "Food"},
+        ])
+        assert total_gross_spent(df) == 100.0  # a payback never inflates gross
+        assert total_spent(df) == 70.0         # net = gross − reimbursed
+
+    def test_category_shows_amount_after_reimbursement(self):
+        df = make_spending_df([
+            {"amount": 100.0, "category": "Food"},
+            {"amount": -30.0, "type": "credit", "is_reimbursement": True, "category": "Food"},
+        ])
+        cat = spending_by_category(df)
+        assert float(cat[cat["category"] == "Food"]["total"].iloc[0]) == 70.0  # net, not 100
+
+    def test_category_floored_not_negative_from_group_collection(self):
+        # Someone collecting for a group: paybacks exceed their own category spend.
+        df = make_spending_df([
+            {"amount": 50.0, "category": "Travel"},
+            {"amount": -900.0, "type": "credit", "is_reimbursement": True, "category": "Travel"},
+        ])
+        cat = spending_by_category(df)
+        assert (cat["total"] >= 0).all()
+        assert "Travel" not in set(cat["category"])  # nets to 0 → dropped, never -850
+
+    def test_category_totals_sum_to_net_when_not_over_collected(self):
+        df = make_spending_df([
+            {"amount": 100.0, "category": "Food"},
+            {"amount": 40.0, "category": "Shopping"},
+            {"amount": -25.0, "type": "credit", "is_reimbursement": True, "category": "Food"},
+        ])
+        cat = spending_by_category(df)
+        assert round(cat["total"].sum(), 2) == total_spent(df) == 115.0
 
 
 class TestTotalSpent:
@@ -249,3 +290,108 @@ class TestCleanDict:
     def test_leaves_native_types_unchanged(self):
         d = {"a": 1, "b": "text", "c": 3.14}
         assert clean_dict(d) == d
+
+
+class TestReimbursementsAcrossBreakdowns:
+    """get_spending() carries reimbursements as negative rows so they net against
+    what they paid back. Every breakdown has to floor at zero and count debits
+    only — otherwise a payback reads as negative spend or as an extra purchase."""
+
+    @staticmethod
+    def _over_collected():
+        # Fronted $50 of own spend, collected $900 back for the group.
+        return make_spending_df([
+            {"amount": 50.0, "merchant_normalized": "Trip", "category": "Travel",
+             "institution": "BankA"},
+            {"amount": -900.0, "type": "credit", "is_reimbursement": True,
+             "merchant_normalized": "Trip", "category": "Travel",
+             "institution": "BankA"},
+        ])
+
+    def test_merchant_total_never_negative(self):
+        result = spending_by_merchant(self._over_collected())
+        assert (result["total"] >= 0).all()
+        assert "Trip" not in set(result["merchant_normalized"])
+
+    def test_institution_total_never_negative(self):
+        result = spending_by_institution(self._over_collected())
+        assert (result["total"] >= 0).all()
+
+    def test_month_total_never_negative_but_period_is_kept(self):
+        result = spending_by_month(self._over_collected())
+        assert (result["total"] >= 0).all()
+        assert len(result) == 1  # the month stays on the axis as a zero
+
+    def test_reimbursement_is_not_counted_as_a_purchase(self):
+        df = make_spending_df([
+            {"amount": 20.0, "merchant_normalized": "Cafe"},
+            {"amount": 30.0, "merchant_normalized": "Cafe"},
+            {"amount": -10.0, "type": "credit", "is_reimbursement": True,
+             "merchant_normalized": "Cafe"},
+        ])
+        result = spending_by_merchant(df)
+        row = result[result["merchant_normalized"] == "Cafe"].iloc[0]
+        assert int(row["count"]) == 2      # two purchases, not three rows
+        assert float(row["total"]) == 40.0  # 20 + 30 - 10
+
+    def test_most_visited_ranks_on_purchases_only(self):
+        df = make_spending_df([
+            # One real purchase, but three paybacks trickling in.
+            {"amount": 100.0, "merchant_normalized": "Venmo Friend"},
+            {"amount": -20.0, "type": "credit", "is_reimbursement": True,
+             "merchant_normalized": "Venmo Friend"},
+            {"amount": -20.0, "type": "credit", "is_reimbursement": True,
+             "merchant_normalized": "Venmo Friend"},
+            {"amount": -20.0, "type": "credit", "is_reimbursement": True,
+             "merchant_normalized": "Venmo Friend"},
+            # Two genuine visits.
+            {"amount": 5.0, "merchant_normalized": "Cafe"},
+            {"amount": 5.0, "merchant_normalized": "Cafe"},
+        ])
+        result = most_visited_merchant(df)
+        assert result["merchant"] == "Cafe"
+        assert result["count"] == 2
+
+    def test_transaction_count_excludes_reimbursements(self):
+        df = make_spending_df([
+            {"amount": 20.0},
+            {"amount": -5.0, "type": "credit", "is_reimbursement": True},
+        ])
+        assert transaction_count(df) == 1
+
+
+class TestSpendingByDowThinHistory:
+    def test_single_week_reports_actuals_instead_of_zeroing_out(self):
+        """Under two weeks of data no weekday can reach 2 observations, so the
+        median path would blank the whole chart."""
+        monday = pd.Timestamp("2025-03-24")  # known Monday
+        df = make_spending_df([
+            {"amount": 10.0, "date": monday},
+            {"amount": 5.0, "date": monday},
+        ])
+        result = spending_by_dow(df)
+        assert float(result[result["dow"] == "Monday"]["total"].iloc[0]) == 15.0
+        assert float(result["total"].sum()) == 15.0
+
+    def test_median_path_still_applies_once_there_are_enough_weeks(self):
+        # Three consecutive Mondays: $10, $10, $100 → median 10, not mean 40.
+        mondays = [pd.Timestamp("2025-03-24"), pd.Timestamp("2025-03-31"),
+                   pd.Timestamp("2025-04-07")]
+        df = make_spending_df([
+            {"amount": 10.0, "date": mondays[0]},
+            {"amount": 10.0, "date": mondays[1]},
+            {"amount": 100.0, "date": mondays[2]},
+        ])
+        result = spending_by_dow(df)
+        assert float(result[result["dow"] == "Monday"]["total"].iloc[0]) == 10.0
+
+    def test_sparse_weekday_still_zeroed_when_history_is_long_enough(self):
+        mondays = [pd.Timestamp("2025-03-24"), pd.Timestamp("2025-03-31")]
+        df = make_spending_df([
+            {"amount": 10.0, "date": mondays[0]},
+            {"amount": 10.0, "date": mondays[1]},
+            # A lone Friday — one observation, not enough for a "typical Friday".
+            {"amount": 500.0, "date": pd.Timestamp("2025-03-28")},
+        ])
+        result = spending_by_dow(df)
+        assert float(result[result["dow"] == "Friday"]["total"].iloc[0]) == 0.0

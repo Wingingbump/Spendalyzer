@@ -20,7 +20,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+from core import ai_budget
+
+_client = anthropic.Anthropic(
+    api_key=os.getenv("ANTHROPIC_API_KEY"),
+    timeout=ai_budget.CALL_TIMEOUT_SECONDS,
+    max_retries=ai_budget.CALL_MAX_RETRIES,
+)
 
 # ── Universal reference data (no locale/brand specifics) ─────────────────────
 

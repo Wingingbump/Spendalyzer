@@ -4,6 +4,7 @@ import pandas as pd
 from fastapi import APIRouter, Depends, Query, Path
 
 from backend.dependencies import apply_filters, get_current_user
+from backend.serialization import df_to_records as _df_to_records
 from core import insights as ins
 from core.db import get_active_nudges, dismiss_nudge, mark_nudges_read, get_unread_nudge_count
 
@@ -27,17 +28,6 @@ def _safe(val):
     return val
 
 
-def _df_to_records(df: pd.DataFrame) -> list:
-    """Convert DataFrame to list of dicts, replacing NaN/NaT with None."""
-    cleaned = df.where(pd.notna(df), None)
-    records = cleaned.to_dict(orient="records")
-    for row in records:
-        for k, v in row.items():
-            if hasattr(v, "isoformat"):
-                row[k] = v.isoformat()
-    return records
-
-
 @router.get("/summary")
 def summary(
     range: str = Query("30d"),
@@ -48,28 +38,47 @@ def summary(
     base = ins.load_data(current_user["id"])
     df = apply_filters(base, range, institution, account)
 
-    mom = ins.this_month_vs_last(df)
+    # Account/institution filters apply, but NOT the date range: every figure
+    # below describes a fixed window of its own (a calendar month, a rolling 30
+    # days). Deriving them from the range-filtered frame truncates their window to
+    # whatever it happens to overlap — "last month" read $180 of a real $280 at
+    # range=30d, and the pace/burn-rate cards built on it were wrong with it.
+    acct_scoped = apply_filters(base, "all", institution, account)
+
+    mom = ins.this_month_vs_last(acct_scoped)
+
+    # These three are "what stands out in the window you're looking at", so they
+    # do follow the range filter.
     bp = ins.biggest_purchase(df)
     mvm = ins.most_visited_merchant(df)
     bsd = ins.biggest_spending_day(df)
 
-    # Rolling 30-day windows, independent of the global range filter — used early
-    # in the month when this-month data is too thin to be useful.
-    acct_scoped = apply_filters(base, "all", institution, account)
+    # Rolling 30-day windows — used early in the month when this-month data is
+    # too thin to be useful.
+    last_60 = ins.filter_by_range(acct_scoped, 60)
     last_30 = ins.total_spent(ins.filter_by_range(acct_scoped, 30))
     prev_30 = ins.total_spent(
-        ins.filter_by_range(acct_scoped, 60)[
-            ins.filter_by_range(acct_scoped, 60)["date"]
-            < (pd.Timestamp.today().normalize() - pd.Timedelta(days=30))
-        ]
+        last_60[last_60["date"] < (pd.Timestamp.today().normalize() - pd.Timedelta(days=30))]
     )
     delta_30 = round(last_30 - prev_30, 2)
     delta_30_pct = round((delta_30 / prev_30 * 100), 1) if prev_30 > 0 else 0.0
+
+    # Current-calendar-month gross → reimbursed → net for the Overview breakdown.
+    _now = pd.Timestamp.today()
+    this_month_df = ins.filter_by_month(acct_scoped, _now.year, _now.month)
+
+    # Pace/burn computed server-side from the shared helper. The Overview used to
+    # derive these in JS from this_month, which rounded differently than the
+    # Tracker's copy and showed $191.00 against its $191.24.
+    mtd = ins.month_to_date(acct_scoped)
 
     return {
         "total_spent": _safe(ins.total_spent(df)),
         "total_income": _safe(ins.total_income(df)),
         "total_reimbursements": _safe(ins.total_reimbursements(df)),
+        "this_month_gross": _safe(ins.total_gross_spent(this_month_df)),
+        "this_month_reimbursed": _safe(ins.total_reimbursements(this_month_df)),
+        "this_month_net": _safe(ins.total_spent(this_month_df)),
         "total_credits": _safe(ins.total_credits(df)),
         "transaction_count": _safe(ins.transaction_count(df)),
         "net_spend": _safe(ins.net_spend(df)),
@@ -80,6 +89,17 @@ def summary(
         "last_30_days": _safe(last_30),
         "last_30_days_delta": _safe(delta_30),
         "last_30_days_delta_pct": _safe(delta_30_pct),
+        "month_pace": _safe(mtd["pace"]),
+        # Same-point-last-month, so the hero can compare like with like instead
+        # of a part-month against a whole one.
+        "prior_month_to_date": _safe(mtd["prior_month_to_date"]),
+        "prior_month_to_date_days": _safe(mtd["prior_month_to_date_days"]),
+        "delta_vs_prior_mtd": _safe(mtd["delta_vs_prior_mtd"]),
+        "delta_vs_prior_mtd_pct": _safe(mtd["delta_vs_prior_mtd_pct"]),
+        "daily_rate": _safe(mtd["daily_rate"]),
+        "days_elapsed": _safe(mtd["days_elapsed"]),
+        "days_in_month": _safe(mtd["days_in_month"]),
+        "days_left": _safe(mtd["days_left"]),
         "biggest_purchase": bp,
         "most_visited_merchant": mvm,
         "biggest_spending_day": bsd,
