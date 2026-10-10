@@ -9,6 +9,7 @@ import { workspaceApi, advisorApi, ledgerApi } from '../lib/api'
 import type { CustomGroup, Goal, LedgerRow } from '../lib/api'
 import { useWorkspace } from '../context/WorkspaceContext'
 import { usePanel } from '../context/PanelContext'
+import { useAdvisorEnabled } from '../context/AuthContext'
 import { formatCurrency } from '../lib/utils'
 
 export const PANEL_WIDTH = 300
@@ -71,9 +72,11 @@ function RecurringTab() {
     staleTime: 120_000,
   })
 
-  const monthlyEstimate = recurring
-    .filter((r) => r.frequency === 'monthly')
-    .reduce((s, r) => s + r.amount, 0)
+  // Sum the server-computed monthly share of every charge, so quarterly and
+  // annual items count at their per-month cost instead of being dropped.
+  // Filtering to frequency === 'monthly' here reported $47.93 against the
+  // Tracker's $50.26 for the same set of charges.
+  const monthlyEstimate = recurring.reduce((s, r) => s + (r.monthly_equivalent ?? 0), 0)
 
   if (isLoading) return <p style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Detecting…</p>
 
@@ -807,6 +810,11 @@ function AdvisorWidget() {
   const navigate = useNavigate()
   const location = useLocation()
   const [input, setInput] = useState('')
+  const advisorEnabled = useAdvisorEnabled()
+
+  // Hide when the advisor is switched off server-side — the box only exists to
+  // deep-link into /advisor, which would bounce back to Overview.
+  if (!advisorEnabled) return null
 
   // Hide on advisor page — redundant there
   if (location.pathname === '/advisor') return null

@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from backend.dependencies import get_current_user
+from backend.serialization import df_to_records as _df_to_records
 from core import insights as ins
 from core.db import get_user_conn
 
@@ -14,15 +15,6 @@ router = APIRouter(prefix="/workspace", tags=["workspace"])
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _df_to_records(df: pd.DataFrame) -> list:
-    cleaned = df.where(pd.notna(df), None)
-    records = cleaned.to_dict(orient="records")
-    for row in records:
-        for k, v in row.items():
-            if hasattr(v, "isoformat"):
-                row[k] = v.isoformat()
-    return records
 
 
 # ── Budget models ─────────────────────────────────────────────────────────────
@@ -47,17 +39,9 @@ def list_budgets(current_user: dict = Depends(get_current_user)):
     budgets = [dict(r) for r in rows]
 
     df = ins.load_data(user_id)
-    cat_spend: dict = {}
-    if not df.empty and "is_transfer" in df.columns:
-        now = datetime.date.today()
-        month_start = now.replace(day=1)
-        # Use the same netted spend the Overview shows: debits PLUS reimbursements
-        # (money-back credits net against their category), not raw debits. Otherwise
-        # a category with a reimbursement looks more spent here than in the Overview.
-        spending = ins.get_spending(df)
-        month_df = spending[spending["date"].dt.date >= month_start]
-        if "category" in month_df.columns and not month_df.empty:
-            cat_spend = month_df.groupby("category")["amount"].sum().to_dict()
+    # Shared helper: nets reimbursements against their category like the Overview,
+    # and floors at zero so an over-reimbursed category can't report negative spend.
+    cat_spend = ins.category_spend_for_month(df) if not df.empty else {}
 
     for b in budgets:
         b["spent"] = round(float(cat_spend.get(b["category"], 0)), 2)
@@ -123,6 +107,24 @@ def _infer_frequency_loose(diffs: list[int]) -> str:
     return min(centers, key=lambda c: abs(c[1] - median_diff))[0]
 
 
+# How many times a given cadence bills in an average month. Used to express every
+# recurring charge as a monthly figure, so a quarterly $7 charge counts as $2.33/mo
+# rather than being dropped (the right panel summed only frequency == "monthly" and
+# reported $47.93 against the Tracker's $50.26 for the same set of charges).
+_MONTHLY_FACTOR = {
+    "weekly": 4.33,
+    "biweekly": 2.17,
+    "monthly": 1.0,
+    "quarterly": 1 / 3,
+    "annual": 1 / 12,
+}
+
+
+def monthly_equivalent(amount: float, frequency: str) -> float:
+    """What this charge costs per month, amortised across its billing cycle."""
+    return round(float(amount) * _MONTHLY_FACTOR.get(frequency, 1.0), 2)
+
+
 def _detect_recurring(df: pd.DataFrame, user_rules: list[dict] | None = None) -> list:
     # Both spending (debit) and income (credit) can recur — e.g. subscriptions
     # and paychecks. Transfers and duplicates are excluded. Sign is preserved so
@@ -141,13 +143,16 @@ def _detect_recurring(df: pd.DataFrame, user_rules: list[dict] | None = None) ->
         axis=1,
     )
 
-    user_rule_keys = {r["merchant_key"] for r in (user_rules or [])}
+    all_rules = user_rules or []
+    active_rules = [r for r in all_rules if not r.get("is_suppressed")]
+    suppressed_keys = {r["merchant_key"] for r in all_rules if r.get("is_suppressed")}
+    user_rule_keys = {r["merchant_key"] for r in active_rules}
     results = []
 
     # ── Auto-detection ────────────────────────────────────────────────────────
     for key, group in clean.groupby("_key"):
-        if key in user_rule_keys:
-            continue  # rule path will handle this merchant
+        if key in user_rule_keys or key in suppressed_keys:
+            continue  # rule path handles it, or the user said it isn't recurring
         if len(group) < 2:
             continue
 
@@ -192,7 +197,7 @@ def _detect_recurring(df: pd.DataFrame, user_rules: list[dict] | None = None) ->
         })
 
     # ── User-rule matching ────────────────────────────────────────────────────
-    for rule in (user_rules or []):
+    for rule in active_rules:
         center = float(rule["amount_center"])
         tol = max(float(rule["amount_tolerance_abs"]), center * float(rule["amount_tolerance_pct"]) / 100.0)
         group = clean[
@@ -219,6 +224,11 @@ def _detect_recurring(df: pd.DataFrame, user_rules: list[dict] | None = None) ->
             "rule_id": rule["id"],
         })
 
+    # Attach the monthly-equivalent once, here, so every consumer (right panel,
+    # Tracker strip, advisor context) totals recurring spend the same way.
+    for r in results:
+        r["monthly_equivalent"] = monthly_equivalent(r["amount"], r["frequency"])
+
     results.sort(key=lambda x: x["amount"], reverse=True)
     return results[:40]
 
@@ -227,7 +237,7 @@ def _fetch_user_rules(user_id: int) -> list[dict]:
     with get_user_conn(user_id) as conn:
         rows = conn.execute("""
             SELECT id, merchant_key, amount_center, amount_tolerance_abs,
-                   amount_tolerance_pct, label, frequency_hint
+                   amount_tolerance_pct, label, frequency_hint, is_suppressed
             FROM user_recurring_rules
             WHERE user_id = %s
             ORDER BY id
@@ -284,6 +294,7 @@ def list_recurring_rules(current_user: dict = Depends(get_current_user)):
             "frequency_hint": r.get("frequency_hint"),
         }
         for r in rules
+        if not r.get("is_suppressed")
     ]
 
 
@@ -303,6 +314,7 @@ def create_recurring_rule(body: RecurringRuleBody, current_user: dict = Depends(
                 amount_tolerance_pct = EXCLUDED.amount_tolerance_pct,
                 label = EXCLUDED.label,
                 frequency_hint = EXCLUDED.frequency_hint,
+                is_suppressed = FALSE,
                 updated_at = NOW()
             RETURNING id
         """, (
@@ -338,10 +350,41 @@ def create_rule_from_transaction(
                 amount_center = EXCLUDED.amount_center,
                 label = COALESCE(EXCLUDED.label, user_recurring_rules.label),
                 frequency_hint = COALESCE(EXCLUDED.frequency_hint, user_recurring_rules.frequency_hint),
+                is_suppressed = FALSE,
                 updated_at = NOW()
             RETURNING id
         """, (user_id, merchant_key, amount, body.label, body.frequency_hint)).fetchone()
     return {"id": result["id"], "merchant_key": merchant_key, "amount_center": amount}
+
+
+@router.post("/recurring/rules/suppress-from-transaction")
+def suppress_recurring_from_transaction(
+    body: RecurringRuleFromTransactionBody,
+    current_user: dict = Depends(get_current_user),
+):
+    """Mark a merchant as NOT recurring. Upserts a suppressed row so auto-detection
+    stops tagging it; flips an existing manual rule to suppressed too. Re-marking the
+    merchant recurring clears the suppression."""
+    user_id = current_user["id"]
+    df = ins.load_data(user_id)
+    if df.empty:
+        raise HTTPException(status_code=404, detail="No transactions found")
+    row = df[df["id"].astype(str) == str(body.transaction_id)]
+    if row.empty:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    tx = row.iloc[0]
+    merchant_key = (tx.get("merchant_normalized") or "").strip() or str(tx["name"])
+    amount = float(tx["amount"])
+    with get_user_conn(user_id) as conn:
+        result = conn.execute("""
+            INSERT INTO user_recurring_rules
+                (user_id, merchant_key, amount_center, is_suppressed)
+            VALUES (%s, %s, %s, TRUE)
+            ON CONFLICT (user_id, merchant_key)
+            DO UPDATE SET is_suppressed = TRUE, updated_at = NOW()
+            RETURNING id
+        """, (user_id, merchant_key, amount)).fetchone()
+    return {"id": result["id"], "merchant_key": merchant_key, "suppressed": True}
 
 
 @router.put("/recurring/rules/{rule_id}")

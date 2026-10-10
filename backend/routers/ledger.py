@@ -6,19 +6,10 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
 from backend.dependencies import apply_filters, get_current_user
+from backend.serialization import df_to_records as _df_to_records
 from core import insights as ins
 
 router = APIRouter(prefix="/ledger", tags=["ledger"])
-
-
-def _df_to_records(df: pd.DataFrame) -> list:
-    cleaned = df.where(pd.notna(df), None)
-    records = cleaned.to_dict(orient="records")
-    for row in records:
-        for k, v in row.items():
-            if hasattr(v, "isoformat"):
-                row[k] = v.isoformat()
-    return records
 
 
 @router.get("")
@@ -41,7 +32,7 @@ def ledger(
                          "amount", "institution", "pending", "type",
                          "is_transfer", "is_duplicate", "notes",
                          "has_user_override", "is_manual",
-                         "is_reimbursement", "needs_review",
+                         "is_reimbursement", "needs_review", "is_excluded",
                          "is_potential_duplicate", "potential_dup_of"]
             if c in df.columns]
     result = df[cols].sort_values("date", ascending=False).reset_index(drop=True)

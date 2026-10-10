@@ -45,12 +45,21 @@ api.interceptors.response.use(
 export interface User {
   id: number
   username: string
+  /**
+   * Server-side feature flags, so the client doesn't offer a route that would
+   * 503. The server enforces each flag on its own endpoints regardless — this
+   * is presentation only, never the access control.
+   */
+  features?: { advisor?: boolean }
 }
 
 export interface InsightsSummary {
   total_spent: number
   total_income: number
   total_reimbursements: number
+  this_month_gross: number
+  this_month_reimbursed: number
+  this_month_net: number
   total_credits: number
   transaction_count: number
   net_spend: number
@@ -61,6 +70,19 @@ export interface InsightsSummary {
   last_30_days: number
   last_30_days_delta: number
   last_30_days_delta_pct: number
+  // Current-month pace, computed server-side (core.insights.month_to_date) and
+  // shared with the Tracker so the two pages can't disagree.
+  month_pace: number
+  /** Last month's spend over the same stretch of days, for a like-for-like
+   *  headline comparison instead of part-month vs whole-month. */
+  prior_month_to_date: number
+  prior_month_to_date_days: number
+  delta_vs_prior_mtd: number
+  delta_vs_prior_mtd_pct: number
+  daily_rate: number
+  days_elapsed: number
+  days_in_month: number
+  days_left: number
   biggest_purchase: { amount: number; name: string; date: string } | null
   most_visited_merchant: { merchant: string; count: number; total: number } | null
   biggest_spending_day: { date: string; total: number } | null
@@ -141,6 +163,7 @@ export interface LedgerRow {
   is_duplicate?: boolean
   is_reimbursement?: boolean
   needs_review?: boolean
+  is_excluded?: boolean
   is_potential_duplicate?: boolean
   potential_dup_of?: PotentialDupOf | null
 }
@@ -313,7 +336,7 @@ export const transactionsApi = {
   list: (params?: FilterParams & { search?: string }) =>
     api.get<Transaction[]>('/transactions', { params: cleanParams(params) }).then((r) => r.data),
 
-  patch: (id: number, data: { category?: string; amount?: number; notes?: string }) =>
+  patch: (id: number, data: { category?: string; amount?: number; notes?: string; excluded?: boolean }) =>
     api.patch<{ ok: boolean }>(`/transactions/${id}`, data).then((r) => r.data),
 
   create: (data: { name: string; date: string; amount: number; category?: string; notes?: string }) =>
@@ -324,6 +347,15 @@ export const transactionsApi = {
 
   dismissDuplicate: (id: string, otherId: string) =>
     api.post<{ ok: boolean }>(`/transactions/${id}/dismiss-duplicate`, { other_id: otherId }).then((r) => r.data),
+
+  // Remember how to treat this transaction's counterparty. true = always a
+  // transfer, false = never, null = clear the rule (revert to auto-detection).
+  setTransfer: (id: number, isTransfer: boolean | null) =>
+    api.post<{ ok: boolean }>(`/transactions/${id}/transfer`, { is_transfer: isTransfer }).then((r) => r.data),
+
+  // { merchant_normalized: is_transfer } for the user's remembered rulings.
+  transferOverrides: () =>
+    api.get<Record<string, boolean>>('/transactions/transfer-overrides').then((r) => r.data),
 }
 
 // ─── Ledger ──────────────────────────────────────────────────────────────────
@@ -580,6 +612,8 @@ export interface RecurringTransaction {
   frequency: 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'annual'
   occurrences: number
   last_date: string
+  /** This charge's cost per month, amortised across its billing cycle. */
+  monthly_equivalent: number
   source?: 'auto' | 'manual'
   rule_id?: number
 }
@@ -624,6 +658,13 @@ export const workspaceApi = {
     api.post<{ id: number; merchant_key: string; amount_center: number }>(
       '/workspace/recurring/rules/from-transaction',
       { transaction_id, label, frequency_hint },
+    ).then((r) => r.data),
+
+  // Mark a merchant as NOT recurring — suppresses auto-detection for it.
+  suppressRecurringFromTransaction: (transaction_id: string) =>
+    api.post<{ id: number; merchant_key: string; suppressed: boolean }>(
+      '/workspace/recurring/rules/suppress-from-transaction',
+      { transaction_id },
     ).then((r) => r.data),
 
   updateRecurringRule: (

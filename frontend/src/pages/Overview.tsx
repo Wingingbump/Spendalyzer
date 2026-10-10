@@ -1,5 +1,5 @@
 
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -11,7 +11,7 @@ import type { HealthWarning } from '../lib/api'
 import { useFilters } from '../context/FilterContext'
 import { useTheme } from '../context/ThemeContext'
 import { useAuth } from '../context/AuthContext'
-import { formatCurrency, formatMonth, CHART_COLORS_DARK, CHART_COLORS_LIGHT } from '../lib/utils'
+import { formatCurrency, formatAxisCurrency, formatMonth, CHART_COLORS_DARK, CHART_COLORS_LIGHT } from '../lib/utils'
 import Card from '../components/Card'
 import MetricCard from '../components/MetricCard'
 import RangeSelect from '../components/RangeSelect'
@@ -290,6 +290,7 @@ function DataHealthCard() {
 
 export default function Overview() {
   const { institution, account } = useFilters()
+  const navigate = useNavigate()
   // Range is contextual to this page (drives the trend, day-of-week, and totals).
   const [range, setRange] = useState('ytd')
   const { theme } = useTheme()
@@ -333,15 +334,19 @@ export default function Overview() {
 
   // By-category breakdown has its own All-time / This-month toggle, independent
   // of the global range filter.
+  // Hoisted so the drill-down links below filter the ledger over exactly the
+  // window these totals were computed from — clicking "$5,518.76" must land on
+  // a list that adds up to $5,518.76.
+  const catRange = (() => {
+    const d = new Date()
+    return catView === 'all'
+      ? 'all'
+      : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+  })()
+
   const { data: categories = [], isLoading: loadingCategories } = useQuery({
     queryKey: ['categories', catView, institution, account],
-    queryFn: () => {
-      const d = new Date()
-      const catRange = catView === 'all'
-        ? 'all'
-        : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-      return insightsApi.categories({ range: catRange, institution, account })
-    },
+    queryFn: () => insightsApi.categories({ range: catRange, institution, account }),
     staleTime: INSIGHTS_STALE,
   })
 
@@ -351,27 +356,41 @@ export default function Overview() {
     staleTime: INSIGHTS_STALE,
   })
 
-  const delta = summary?.delta ?? 0
-  const deltaPct = summary?.delta_pct ?? 0
-  const isPositiveDelta = delta <= 0
+  // Headline comparison is month-to-date against the SAME stretch of last
+  // month. The old badge compared 10 elapsed days against a full 30 and
+  // announced a 97% drop — flattering, and wrong, for most of every month.
+  const mtdDelta = summary?.delta_vs_prior_mtd ?? 0
+  const mtdDeltaPct = summary?.delta_vs_prior_mtd_pct ?? 0
+  const priorMtd = summary?.prior_month_to_date ?? 0
+  const priorMtdDays = summary?.prior_month_to_date_days ?? 0
+  const isPositiveDelta = mtdDelta <= 0
+  // No spend in that window last month, so a percentage would be meaningless.
+  const hasPriorMtd = priorMtd > 0
 
-  // ── Derived pace metrics ───────────────────────────────────────────────────
+  // ── Pace metrics ───────────────────────────────────────────────────────────
+  // Server-computed (core.insights.month_to_date) and shared with the Tracker.
+  // Deriving them here from this_month rounded to whole dollars while the Tracker
+  // rounded to cents, so the same month read $191.00 here and $191.24 there.
   const today = new Date()
-  const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate()
-  const daysElapsed = today.getDate()
-  const daysRemaining = daysInMonth - daysElapsed
-  const dailyRate = summary && daysElapsed > 0 ? summary.this_month / daysElapsed : 0
-  const projected = Math.round(dailyRate * daysInMonth)
+  const daysInMonth = summary?.days_in_month ?? new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate()
+  const daysElapsed = summary?.days_elapsed ?? today.getDate()
+  const daysRemaining = summary?.days_left ?? daysInMonth - daysElapsed
+  const dailyRate = summary?.daily_rate ?? 0
+  const projected = summary?.month_pace ?? 0
   const isPaceOver = summary?.last_month ? projected > summary.last_month : false
   const paceVsLast = summary?.last_month && summary.last_month > 0
     ? ((projected - summary.last_month) / summary.last_month * 100).toFixed(0)
     : null
 
   // ── Monthly chart helpers ──────────────────────────────────────────────────
-  const monthlyAvg = monthly.length > 1
-    ? monthly.reduce((s, m) => s + m.total, 0) / monthly.length
-    : 0
   const currentMonthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`
+  // Averaged over completed months only. The month in progress is a part-month
+  // total, so including it drags the average down all month and makes every
+  // finished bar look above average.
+  const completedMonths = monthly.filter((m) => m.month !== currentMonthKey)
+  const monthlyAvg = completedMonths.length > 1
+    ? completedMonths.reduce((s, m) => s + m.total, 0) / completedMonths.length
+    : 0
 
   // ── Daily burn rate: this month's spend per elapsed day vs last month's daily avg ──
   const daysInLastMonth = new Date(today.getFullYear(), today.getMonth(), 0).getDate()
@@ -421,16 +440,31 @@ export default function Overview() {
                 {formatCurrency(summary?.this_month ?? 0)}
               </p>
               {summary && (
-                <div className="mt-2 inline-flex items-center gap-1 px-2 py-0.5 rounded" style={{ background: 'rgba(255,255,255,0.15)', fontSize: 11, fontWeight: 600, color: isPositiveDelta ? 'rgba(90,230,160,0.95)' : 'rgba(255,120,100,0.95)' }}>
-                  {`${isPositiveDelta ? '↓' : '↑'} ${formatCurrency(Math.abs(delta))} vs last month (${Math.abs(deltaPct).toFixed(1)}%)`}
-                </div>
+                hasPriorMtd ? (
+                  <div
+                    className="mt-2 inline-flex items-center gap-1 px-2 py-0.5 rounded"
+                    style={{ background: 'rgba(255,255,255,0.15)', fontSize: 11, fontWeight: 600, color: isPositiveDelta ? 'rgba(90,230,160,0.95)' : 'rgba(255,120,100,0.95)' }}
+                    title={`First ${priorMtdDays} days of this month vs the first ${priorMtdDays} days of last month (${formatCurrency(priorMtd)})`}
+                  >
+                    {`${isPositiveDelta ? '↓' : '↑'} ${formatCurrency(Math.abs(mtdDelta))} (${Math.abs(mtdDeltaPct).toFixed(0)}%) vs same point last month`}
+                  </div>
+                ) : (
+                  <div className="mt-2 inline-flex items-center gap-1 px-2 py-0.5 rounded" style={{ background: 'rgba(255,255,255,0.15)', fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.75)' }}>
+                    {`Day ${daysElapsed} of ${daysInMonth}`}
+                  </div>
+                )
               )}
               {/* Secondary stats row */}
               <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.18)', display: 'flex', gap: 20 }}>
                 <div>
-                  <p style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'rgba(255,255,255,0.5)', marginBottom: 3 }}>Last month</p>
+                  <p style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'rgba(255,255,255,0.5)', marginBottom: 3 }}>
+                    By day {priorMtdDays} last mo
+                  </p>
                   <p style={{ fontSize: 13, fontFamily: 'ui-monospace, monospace', fontWeight: 600, color: 'var(--color-accent-contrast)' }}>
-                    {formatCurrency(summary?.last_month ?? 0)}
+                    {formatCurrency(priorMtd)}
+                  </p>
+                  <p style={{ fontSize: 10, marginTop: 2, color: 'rgba(255,255,255,0.5)' }}>
+                    {`${formatCurrency(summary?.last_month ?? 0)} full month`}
                   </p>
                 </div>
                 <div>
@@ -472,11 +506,63 @@ export default function Overview() {
         />
       </div>
 
+      {/* This month's gross → reimbursed → net breakdown (only when reimbursed) */}
+      {summary && summary.this_month_reimbursed > 0 && (
+        <Card>
+          <div className="mb-3 flex items-baseline justify-between gap-3">
+            <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)' }}>
+              This Month's Spending
+            </p>
+          </div>
+          <div className="flex items-stretch flex-wrap" style={{ gap: 12 }}>
+            {[
+              { label: 'Gross spend', value: summary.this_month_gross, color: 'var(--color-text-primary)', op: null },
+              { label: 'Reimbursed', value: summary.this_month_reimbursed, color: 'var(--color-positive)', op: '−' },
+              { label: 'Net spend', value: summary.this_month_net, color: 'var(--color-text-primary)', op: '=', emphasize: true },
+            ].map((item) => (
+              <Fragment key={item.label}>
+                {item.op && (
+                  <div className="flex items-center" style={{ fontSize: 22, fontWeight: 400, color: 'var(--color-text-muted)' }}>
+                    {item.op}
+                  </div>
+                )}
+                <div
+                  className="rounded-lg px-4 py-3"
+                  style={{
+                    flex: '1 1 120px', minWidth: 120,
+                    background: item.emphasize ? 'var(--color-accent-soft)' : 'var(--color-bg)',
+                    border: `1px solid ${item.emphasize ? 'color-mix(in srgb, var(--color-accent) 30%, transparent)' : 'var(--color-border)'}`,
+                  }}
+                >
+                  <p style={{ fontSize: 10, fontWeight: 600, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 4 }}>
+                    {item.label}
+                  </p>
+                  <p style={{ fontSize: 20, fontWeight: 700, fontFamily: 'ui-monospace, monospace', color: item.color, lineHeight: 1 }}>
+                    {formatCurrency(item.value)}
+                  </p>
+                </div>
+              </Fragment>
+            ))}
+          </div>
+        </Card>
+      )}
+
       {/* Monthly Chart */}
       <Card>
-        <p className="mb-4" style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)' }}>
-          Monthly Spending
-        </p>
+        <div className="mb-4 flex items-baseline justify-between gap-3">
+          <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)' }}>
+            Monthly Spending
+          </p>
+          {monthlyAvg > 0 && (
+            <p style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+              avg{' '}
+              <span style={{ fontWeight: 600, color: 'var(--color-text-secondary)' }}>
+                {formatCurrency(monthlyAvg)}
+              </span>
+              /mo over {completedMonths.length} full months
+            </p>
+          )}
+        </div>
         {loadingMonthly ? (
           <div className="flex items-center justify-center" style={{ height: 200 }}>
             <Spinner />
@@ -498,7 +584,7 @@ export default function Overview() {
                 tick={{ fill: 'var(--color-text-muted)', fontSize: 11 }}
                 axisLine={false}
                 tickLine={false}
-                tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`}
+                tickFormatter={formatAxisCurrency}
                 width={45}
               />
               <Tooltip content={<MonthlyTooltip />} cursor={{ fill: 'var(--color-surface-raise)' }} />
@@ -508,7 +594,7 @@ export default function Overview() {
                   stroke="var(--color-text-muted)"
                   strokeDasharray="4 3"
                   strokeWidth={1}
-                  label={{ value: 'avg', position: 'insideTopRight', fontSize: 10, fill: 'var(--color-text-muted)', dy: -4 }}
+                  label={{ value: `avg ${formatCurrency(monthlyAvg)}`, position: 'insideTopRight', fontSize: 10, fill: 'var(--color-text-muted)', dy: -4 }}
                 />
               )}
               <Bar dataKey="total" radius={[3, 3, 0, 0]}>
@@ -566,7 +652,20 @@ export default function Overview() {
           ) : (
             <div className="space-y-2">
               {categories.slice(0, 8).map((cat, i) => (
-                <div key={cat.category}>
+                <button
+                  key={cat.category}
+                  onClick={() => navigate(
+                    `/transactions?category=${encodeURIComponent(cat.category)}&range=${encodeURIComponent(catRange)}`
+                  )}
+                  title={`See ${cat.category} transactions`}
+                  className="w-full text-left rounded-md transition-colors"
+                  style={{
+                    background: 'transparent', border: 'none', cursor: 'pointer',
+                    padding: '2px 4px', margin: '0 -4px',
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-surface-raise)' }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+                >
                   <div className="flex items-center justify-between mb-0.5">
                     <span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }} className="truncate max-w-32">
                       {cat.category}
@@ -581,7 +680,7 @@ export default function Overview() {
                       style={{ width: `${cat.pct}%`, background: chartColors[i % chartColors.length] }}
                     />
                   </div>
-                </div>
+                </button>
               ))}
             </div>
           )}
@@ -613,7 +712,7 @@ export default function Overview() {
                   tick={{ fill: 'var(--color-text-muted)', fontSize: 11 }}
                   axisLine={false}
                   tickLine={false}
-                  tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`}
+                  tickFormatter={formatAxisCurrency}
                   width={40}
                 />
                 <Tooltip content={<DowTooltip />} cursor={{ fill: 'var(--color-surface-raise)' }} />

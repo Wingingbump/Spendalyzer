@@ -1,6 +1,16 @@
 import os
 import sys
 
+# On Windows the default console codec (cp1252) can't encode characters that show
+# up in transaction memos (emoji) or log messages (e.g. "→"), which raises a
+# UnicodeEncodeError inside the logging handler. Make console output tolerant so a
+# stray character never crashes a log call. No-op on UTF-8 consoles (Linux/prod).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 # Ensure project root is on sys.path so core/ and services/ are importable
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
@@ -21,7 +31,8 @@ from starlette.middleware.gzip import GZipMiddleware
 load_dotenv()
 
 from backend.limiter import limiter
-from core.db import seed_category_map_all_users, purge_deleted_users
+from core.db import (seed_category_map_all_users, purge_deleted_users,
+                     cleanup_expired_refresh_tokens)
 
 from backend.routers import (
     auth,
@@ -40,20 +51,27 @@ from backend.routers import (
 )
 
 
-async def _purge_loop():
-    while True:
+def _run_maintenance() -> None:
+    """Periodic housekeeping. Each task is isolated so one failure doesn't skip
+    the rest or kill the loop."""
+    for name, task in (("purge_deleted_users", purge_deleted_users),
+                       ("cleanup_expired_refresh_tokens", cleanup_expired_refresh_tokens)):
         try:
-            purge_deleted_users()
+            task()
         except Exception as e:
-            print(f"[purge] error: {e}")
+            print(f"[maintenance] {name} failed: {e}")
+
+
+async def _maintenance_loop():
+    while True:
+        await asyncio.to_thread(_run_maintenance)
         await asyncio.sleep(60 * 60)  # run every hour
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     seed_category_map_all_users()
-    purge_deleted_users()
-    task = asyncio.create_task(_purge_loop())
+    task = asyncio.create_task(_maintenance_loop())
     yield
     task.cancel()
 
