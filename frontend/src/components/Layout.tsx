@@ -124,8 +124,17 @@ export default function Layout({ children }: LayoutProps) {
     <PanelContext.Provider value={{ panelOpen: effectivePanelOpen, focusTab, requestedTab }}>
     <div className="flex min-h-screen" style={{ background: 'var(--color-bg)' }}>
       {/* Blurred content layer — blur covers sidebar + main + right panel */}
+      {/*
+        min-w-0 on this row and on <main>: a flex item defaults to
+        min-width:auto and refuses to shrink below its content's intrinsic
+        width. Without it a wide child — the transactions table, a markdown
+        <code> block in an advisor reply — propagated its width all the way up
+        and made the whole document 1056px wide at a 390px viewport, pushing the
+        Amount column off-screen, instead of scrolling inside its own
+        overflow-x-auto container.
+      */}
       <div
-        className="flex flex-1 min-h-screen"
+        className="flex flex-1 min-h-screen min-w-0"
         style={{
           filter: showWarning ? 'blur(6px)' : 'none',
           transition: 'filter 0.3s ease',
@@ -134,7 +143,7 @@ export default function Layout({ children }: LayoutProps) {
       >
         <Sidebar />
         <main
-          className="flex-1 overflow-auto"
+          className="flex-1 min-w-0 overflow-auto"
           style={{
             marginLeft: isMobile ? 0 : 220,
             marginRight: effectivePanelOpen ? PANEL_WIDTH : 0,

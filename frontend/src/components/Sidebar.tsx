@@ -14,7 +14,7 @@ import {
   Target,
 } from 'lucide-react'
 import { insightsApi, syncApi } from '../lib/api'
-import { useAuth } from '../context/AuthContext'
+import { useAuth, useAdvisorEnabled } from '../context/AuthContext'
 import { useFilters } from '../context/FilterContext'
 import { formatDate } from '../lib/utils'
 
@@ -31,6 +31,7 @@ const NAV_ITEMS = [
 export default function Sidebar() {
   const isMobile = useIsMobile()
   const { user, logout } = useAuth()
+  const advisorEnabled = useAdvisorEnabled()
   const { institution, account, setInstitution, setAccount } = useFilters()
   const qc = useQueryClient()
   const [userMenuOpen, setUserMenuOpen] = useState(false)
@@ -100,7 +101,8 @@ export default function Sidebar() {
 
       {/* Nav */}
       <nav className="px-2 flex-shrink-0">
-        {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
+        {NAV_ITEMS.filter((item) => item.to !== '/advisor' || advisorEnabled)
+          .map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
             to={to}
@@ -213,8 +215,16 @@ export default function Sidebar() {
       {/* Dedup summary */}
       {summary && (
         <div className="px-4 mt-2 flex-shrink-0">
-          <p style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
-            {summary.transaction_count} txns
+          {/* Purchases, not rows: transaction_count is debits only. The
+              Transactions footer counts every row in view (income and
+              reimbursements included), so the two legitimately differ — label
+              them distinctly rather than letting "385 txns" sit next to
+              "487 transactions" looking like a bug. */}
+          <p
+            style={{ fontSize: 11, color: 'var(--color-text-muted)' }}
+            title="Purchases in the selected range — income and reimbursements excluded"
+          >
+            {summary.transaction_count} purchases
           </p>
         </div>
       )}

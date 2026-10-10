@@ -7,6 +7,7 @@ import {
   ChevronDown, ChevronUp, MessageSquare, Edit2, Check, X, Trash2,
 } from 'lucide-react'
 import { advisorApi, workspaceApi } from '../lib/api'
+import { useAdvisorEnabled } from '../context/AuthContext'
 import type { TrackerGoal, TrackerBudget, RecurringRule } from '../lib/api'
 import { formatCurrency, formatMonth } from '../lib/utils'
 
@@ -80,6 +81,7 @@ function GoalCard({ goal, onUpdateAmount }: {
   onUpdateAmount: (id: number, amount: number) => Promise<void>
 }) {
   const navigate = useNavigate()
+  const advisorEnabled = useAdvisorEnabled()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(String(goal.current_amount))
   const [saving, setSaving] = useState(false)
@@ -123,19 +125,21 @@ function GoalCard({ goal, onUpdateAmount }: {
             {goal.title}
           </h3>
         </div>
-        <button
-          onClick={() => navigate(`/advisor?q=How am I tracking toward my goal: ${encodeURIComponent(goal.title)}?`)}
-          title="Ask advisor about this goal"
-          style={{
-            display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0,
-            fontSize: 11, padding: '4px 9px', borderRadius: 8,
-            background: 'transparent', color: 'var(--color-text-muted)',
-            border: '1px solid var(--color-border)', cursor: 'pointer',
-          }}
-        >
-          <MessageSquare size={11} />
-          Ask
-        </button>
+        {advisorEnabled && (
+          <button
+            onClick={() => navigate(`/advisor?q=How am I tracking toward my goal: ${encodeURIComponent(goal.title)}?`)}
+            title="Ask advisor about this goal"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0,
+              fontSize: 11, padding: '4px 9px', borderRadius: 8,
+              background: 'transparent', color: 'var(--color-text-muted)',
+              border: '1px solid var(--color-border)', cursor: 'pointer',
+            }}
+          >
+            <MessageSquare size={11} />
+            Ask
+          </button>
+        )}
       </div>
 
       {/* Progress bar */}
@@ -238,6 +242,7 @@ function GoalCard({ goal, onUpdateAmount }: {
 function BudgetCard({ budget }: { budget: TrackerBudget }) {
   const [expanded, setExpanded] = useState(false)
   const navigate = useNavigate()
+  const advisorEnabled = useAdvisorEnabled()
   const pct = budget.amount > 0 ? (budget.spent / budget.amount) * 100 : 0
   const pacePct = budget.amount > 0 ? (budget.pace / budget.amount) * 100 : 0
   const color = paceColor(pacePct)
@@ -292,13 +297,15 @@ function BudgetCard({ budget }: { budget: TrackerBudget }) {
           <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
             On pace for <span style={{ color, fontWeight: 600 }}>{formatCurrency(budget.pace)}</span> by month-end
           </span>
-          <button
-            onClick={() => navigate(`/advisor?q=Help me understand my ${budget.category} spending and how I can optimise it.`)}
-            style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 11, color: 'var(--color-text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
-          >
-            <MessageSquare size={10} />
-            Ask
-          </button>
+          {advisorEnabled && (
+            <button
+              onClick={() => navigate(`/advisor?q=Help me understand my ${budget.category} spending and how I can optimise it.`)}
+              style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 11, color: 'var(--color-text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+            >
+              <MessageSquare size={10} />
+              Ask
+            </button>
+          )}
         </div>
       </div>
 
@@ -375,6 +382,7 @@ function BudgetCard({ budget }: { budget: TrackerBudget }) {
 function HealthTab({ data }: { data: NonNullable<ReturnType<typeof useTrackerData>['data']> }) {
   const { snapshots, recurring, summary } = data
   const navigate = useNavigate()
+  const advisorEnabled = useAdvisorEnabled()
   const qc = useQueryClient()
 
   const monthlyRecurringByCat = recurring.slice(0, 8)
@@ -502,15 +510,17 @@ function HealthTab({ data }: { data: NonNullable<ReturnType<typeof useTrackerDat
                 )
               })}
             </div>
-            <div className="px-4 py-2.5" style={{ borderTop: '1px solid var(--color-border)' }}>
-              <button
-                onClick={() => navigate('/advisor?q=Which of my recurring subscriptions should I consider cancelling to save money?')}
-                style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--color-accent-text)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
-              >
-                <MessageSquare size={12} />
-                Ask advisor to review subscriptions
-              </button>
-            </div>
+            {advisorEnabled && (
+              <div className="px-4 py-2.5" style={{ borderTop: '1px solid var(--color-border)' }}>
+                <button
+                  onClick={() => navigate('/advisor?q=Which of my recurring subscriptions should I consider cancelling to save money?')}
+                  style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--color-accent-text)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                >
+                  <MessageSquare size={12} />
+                  Ask advisor to review subscriptions
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -659,6 +669,7 @@ type Tab = 'goals' | 'budgets' | 'health'
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function Tracker() {
+  const advisorEnabled = useAdvisorEnabled()
   const [tab, setTab] = useState<Tab>('goals')
   const qc = useQueryClient()
   const { data, isLoading, isError } = useTrackerData()
@@ -786,7 +797,11 @@ export default function Tracker() {
             <div className="rounded-xl p-8 text-center" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}>
               <Target size={28} style={{ color: 'var(--color-text-muted)', margin: '0 auto 10px' }} />
               <p style={{ fontSize: 14, color: 'var(--color-text-muted)' }}>No active goals yet.</p>
-              <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>Tell the advisor what you're working toward and it'll set one up.</p>
+              <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>
+                {advisorEnabled
+                  ? "Tell the advisor what you're working toward and it'll set one up."
+                  : 'Add one from the Goals section in the side panel.'}
+              </p>
             </div>
           ) : (
             <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))' }}>

@@ -227,31 +227,64 @@ class TestCreateTransaction:
 # ── PATCH /transactions/{id} ───────────────────────────────────────────────────
 
 class TestPatchTransaction:
-    def test_returns_ok(self, client):
+    @pytest.fixture()
+    def owned(self):
+        """PATCH checks ownership before writing, so every happy-path test needs
+        the transaction to resolve to the current user."""
+        with patch("backend.routers.transactions.transaction_belongs_to_user",
+                   return_value=True) as m:
+            yield m
+
+    def test_returns_ok(self, client, owned):
         with patch("backend.routers.transactions.save_override"):
             r = client.patch("/transactions/tx1", json={"category": "Shopping"})
         assert r.status_code == 200
         assert r.json()["ok"] is True
 
-    def test_patch_category_calls_save_override(self, client):
+    def test_patch_category_calls_save_override(self, client, owned):
         with patch("backend.routers.transactions.save_override") as mock_save:
             client.patch("/transactions/tx1", json={"category": "Travel"})
-        mock_save.assert_called_once_with("tx1", category="Travel", amount=None, notes=None)
+        mock_save.assert_called_once_with(
+            FAKE_USER["id"], "tx1",
+            category="Travel", amount=None, notes=None, excluded=None,
+        )
 
-    def test_patch_notes_calls_save_override(self, client):
+    def test_patch_notes_calls_save_override(self, client, owned):
         with patch("backend.routers.transactions.save_override") as mock_save:
             client.patch("/transactions/tx1", json={"notes": "reimbursed"})
-        mock_save.assert_called_once_with("tx1", category=None, amount=None, notes="reimbursed")
+        mock_save.assert_called_once_with(
+            FAKE_USER["id"], "tx1",
+            category=None, amount=None, notes="reimbursed", excluded=None,
+        )
 
-    def test_patch_amount_calls_save_override(self, client):
+    def test_patch_amount_calls_save_override(self, client, owned):
         with patch("backend.routers.transactions.save_override") as mock_save:
             client.patch("/transactions/tx1", json={"amount": 99.99})
-        mock_save.assert_called_once_with("tx1", category=None, amount=99.99, notes=None)
+        mock_save.assert_called_once_with(
+            FAKE_USER["id"], "tx1",
+            category=None, amount=99.99, notes=None, excluded=None,
+        )
 
-    def test_empty_body_still_returns_ok(self, client):
+    def test_patch_excluded_calls_save_override(self, client, owned):
+        with patch("backend.routers.transactions.save_override") as mock_save:
+            client.patch("/transactions/tx1", json={"excluded": True})
+        mock_save.assert_called_once_with(
+            FAKE_USER["id"], "tx1",
+            category=None, amount=None, notes=None, excluded=True,
+        )
+
+    def test_empty_body_still_returns_ok(self, client, owned):
         with patch("backend.routers.transactions.save_override"):
             r = client.patch("/transactions/tx1", json={})
         assert r.status_code == 200
+
+    def test_other_users_transaction_returns_404_without_writing(self, client):
+        with patch("backend.routers.transactions.transaction_belongs_to_user",
+                   return_value=False), \
+             patch("backend.routers.transactions.save_override") as mock_save:
+            r = client.patch("/transactions/tx1", json={"category": "Travel"})
+        assert r.status_code == 404
+        mock_save.assert_not_called()
 
 
 # ── DELETE /transactions/{id} ──────────────────────────────────────────────────

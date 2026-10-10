@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from backend.dependencies import get_current_user
+from backend.serialization import df_to_records as _df_to_records
 from core import insights as ins
 from core.db import get_user_conn
 
@@ -14,15 +15,6 @@ router = APIRouter(prefix="/workspace", tags=["workspace"])
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _df_to_records(df: pd.DataFrame) -> list:
-    cleaned = df.where(pd.notna(df), None)
-    records = cleaned.to_dict(orient="records")
-    for row in records:
-        for k, v in row.items():
-            if hasattr(v, "isoformat"):
-                row[k] = v.isoformat()
-    return records
 
 
 # ── Budget models ─────────────────────────────────────────────────────────────
@@ -47,17 +39,9 @@ def list_budgets(current_user: dict = Depends(get_current_user)):
     budgets = [dict(r) for r in rows]
 
     df = ins.load_data(user_id)
-    cat_spend: dict = {}
-    if not df.empty and "is_transfer" in df.columns:
-        now = datetime.date.today()
-        month_start = now.replace(day=1)
-        # Use the same netted spend the Overview shows: debits PLUS reimbursements
-        # (money-back credits net against their category), not raw debits. Otherwise
-        # a category with a reimbursement looks more spent here than in the Overview.
-        spending = ins.get_spending(df)
-        month_df = spending[spending["date"].dt.date >= month_start]
-        if "category" in month_df.columns and not month_df.empty:
-            cat_spend = month_df.groupby("category")["amount"].sum().to_dict()
+    # Shared helper: nets reimbursements against their category like the Overview,
+    # and floors at zero so an over-reimbursed category can't report negative spend.
+    cat_spend = ins.category_spend_for_month(df) if not df.empty else {}
 
     for b in budgets:
         b["spent"] = round(float(cat_spend.get(b["category"], 0)), 2)
@@ -121,6 +105,24 @@ def _infer_frequency_loose(diffs: list[int]) -> str:
     median_diff = sorted_diffs[len(sorted_diffs) // 2]
     centers = [("weekly", 7), ("biweekly", 14), ("monthly", 30), ("quarterly", 91), ("annual", 365)]
     return min(centers, key=lambda c: abs(c[1] - median_diff))[0]
+
+
+# How many times a given cadence bills in an average month. Used to express every
+# recurring charge as a monthly figure, so a quarterly $7 charge counts as $2.33/mo
+# rather than being dropped (the right panel summed only frequency == "monthly" and
+# reported $47.93 against the Tracker's $50.26 for the same set of charges).
+_MONTHLY_FACTOR = {
+    "weekly": 4.33,
+    "biweekly": 2.17,
+    "monthly": 1.0,
+    "quarterly": 1 / 3,
+    "annual": 1 / 12,
+}
+
+
+def monthly_equivalent(amount: float, frequency: str) -> float:
+    """What this charge costs per month, amortised across its billing cycle."""
+    return round(float(amount) * _MONTHLY_FACTOR.get(frequency, 1.0), 2)
 
 
 def _detect_recurring(df: pd.DataFrame, user_rules: list[dict] | None = None) -> list:
@@ -221,6 +223,11 @@ def _detect_recurring(df: pd.DataFrame, user_rules: list[dict] | None = None) ->
             "source": "manual",
             "rule_id": rule["id"],
         })
+
+    # Attach the monthly-equivalent once, here, so every consumer (right panel,
+    # Tracker strip, advisor context) totals recurring spend the same way.
+    for r in results:
+        r["monthly_equivalent"] = monthly_equivalent(r["amount"], r["frequency"])
 
     results.sort(key=lambda x: x["amount"], reverse=True)
     return results[:40]

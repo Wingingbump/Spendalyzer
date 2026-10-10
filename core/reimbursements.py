@@ -26,10 +26,15 @@ from rapidfuzz import fuzz
 from dotenv import load_dotenv
 
 from core.categorize import CATEGORIES
+from core import ai_budget
 
 load_dotenv()
 
-_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+_client = anthropic.Anthropic(
+    api_key=os.getenv("ANTHROPIC_API_KEY"),
+    timeout=ai_budget.CALL_TIMEOUT_SECONDS,
+    max_retries=ai_budget.CALL_MAX_RETRIES,
+)
 
 P2P_PLATFORMS = ["venmo", "paypal", "zelle", "cashapp", "cash app", "apple cash"]
 # Categories too vague to be a useful netting target — treat as "no category".
@@ -149,13 +154,18 @@ def categorize_reimbursements(df: pd.DataFrame, user_id: int) -> pd.DataFrame:
         if cat is None and memo:
             if memo in memo_cache:
                 cat = memo_cache[memo]
-            else:
+            elif ai_budget.claim():
                 try:
                     cat = ai_classify_memo(memo)
                 except Exception:
-                    cat = "Uncategorized"
-                save_memo_category(memo, cat)
-                memo_cache[memo] = cat
+                    # A transient API failure must not be cached: memo_category_cache
+                    # is shared across users and permanent, so persisting this would
+                    # pin the memo to Uncategorized forever. Fall through to
+                    # needs_review and retry on the next rebuild.
+                    cat = None
+                else:
+                    save_memo_category(memo, cat)
+                    memo_cache[memo] = cat
 
         if cat and str(cat).lower() not in ("uncategorized", ""):
             df.at[idx, "category"] = cat

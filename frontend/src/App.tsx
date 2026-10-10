@@ -1,6 +1,6 @@
 import React, { lazy, Suspense } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
-import { useAuth } from './context/AuthContext'
+import { useAuth, useAdvisorEnabled } from './context/AuthContext'
 import Layout from './components/Layout'
 import Spinner from './components/Spinner'
 import Welcome from './pages/Welcome'
@@ -15,6 +15,11 @@ const Settings = lazy(() => import('./pages/Settings'))
 const Canvas = lazy(() => import('./pages/Canvas'))
 const Advisor = lazy(() => import('./pages/Advisor'))
 const Tracker = lazy(() => import('./pages/Tracker'))
+
+function AdvisorRoute() {
+  const advisorEnabled = useAdvisorEnabled()
+  return advisorEnabled ? <Advisor /> : <Navigate to="/overview" replace />
+}
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = useAuth()
@@ -101,11 +106,15 @@ export default function App() {
             </ProtectedRoute>
           }
         />
+        {/* Advisor is behind a server-side flag (ADVISOR_ENABLED). When it's
+            off the route still exists but bounces to Overview, so a bookmark or
+            a stale link lands somewhere real instead of on a page whose every
+            request 503s. */}
         <Route
           path="/advisor"
           element={
             <ProtectedRoute>
-              <Advisor />
+              <AdvisorRoute />
             </ProtectedRoute>
           }
         />

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
+import { useAdvisorEnabled } from '../context/AuthContext'
 import {
   LayoutDashboard, List, Target, Bot, MoreHorizontal,
   PieChart, LayoutGrid, Settings, X,
@@ -9,7 +10,7 @@ const PRIMARY_NAV = [
   { to: '/overview',      label: 'Overview',      icon: LayoutDashboard },
   { to: '/transactions',  label: 'Transactions',  icon: List },
   { to: '/tracker',       label: 'Tracker',       icon: Target },
-  { to: '/advisor',       label: 'Advisor',       icon: Bot },
+  { to: '/advisor',       label: 'Advisor',       icon: Bot, feature: 'advisor' as const },
 ]
 
 const MORE_NAV = [
@@ -20,6 +21,9 @@ const MORE_NAV = [
 
 export default function BottomNav() {
   const [moreOpen, setMoreOpen] = useState(false)
+  const advisorEnabled = useAdvisorEnabled()
+  // Drop the Advisor tab when the feature is off, so the bar shows 3 items + More.
+  const primaryNav = PRIMARY_NAV.filter((n) => n.feature !== 'advisor' || advisorEnabled)
 
   return (
     <>
@@ -75,7 +79,7 @@ export default function BottomNav() {
           paddingBottom: 'env(safe-area-inset-bottom)',
         }}
       >
-        {PRIMARY_NAV.map(({ to, label, icon: Icon }) => (
+        {primaryNav.map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
             to={to}

@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useLocation } from 'react-router-dom'
 import { Search, Check, Plus, Trash2, X, Tag, Download, AlertTriangle, Repeat, ChevronUp, ChevronDown, ChevronsUpDown, Pencil, SlidersHorizontal, Eye, EyeOff } from 'lucide-react'
 import { ledgerApi, transactionsApi, workspaceApi, merchantsApi, categoriesApi } from '../lib/api'
 import type { LedgerRow, RecurringRule } from '../lib/api'
@@ -10,6 +11,7 @@ import { PANEL_WIDTH } from '../components/RightPanel'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { formatCurrency, formatDate, getCategoryColor } from '../lib/utils'
 import SkeletonRow from '../components/SkeletonRow'
+import Spinner from '../components/Spinner'
 import RangeSelect from '../components/RangeSelect'
 import { ActiveGroupBanner } from '../components/RightPanel'
 import TransactionDrawer from '../components/TransactionDrawer'
@@ -51,6 +53,7 @@ interface AddForm {
 
 export default function Transactions() {
   const { institution, account } = useFilters()
+  const location = useLocation()
   // Range is contextual to this page; the table defaults to all time so it never
   // silently hides transactions.
   const [range, setRange] = useState('all')
@@ -80,6 +83,30 @@ export default function Transactions() {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
   // Drawer: store selected row id; derive the full row object from current rows
   const [selectedRowId, setSelectedRowId] = useState<number | null>(null)
+
+  // Filters can arrive in the URL, so the rest of the app can link straight to a
+  // slice of the ledger — /transactions?category=Food%20%26%20Drink. Keyed on
+  // location.search so it fires on a cold load and when a second link is
+  // followed while already on this page (no remount). Only params that are
+  // actually present are applied, so a manual filter change isn't clobbered.
+  useEffect(() => {
+    const sp = new URLSearchParams(location.search)
+
+    const cat = sp.get('category')
+    if (cat !== null) {
+      setCategories(cat ? cat.split(',').map((c) => c.trim()).filter(Boolean) : [])
+    }
+
+    const merchant = sp.get('merchant')
+    if (merchant !== null) setSearch(merchant)
+
+    const r = sp.get('range')
+    if (r !== null) setRange(r)
+
+    // Linked-to slices are usually about spending; don't silently hide rows the
+    // link's own total counted.
+    if (sp.get('showTransfers') === '1') setShowTransfers(true)
+  }, [location.search])
   const qc = useQueryClient()
 
   // Modal autofocus refs (Task 4)
@@ -903,6 +930,10 @@ export default function Transactions() {
         </div>
       </div>
 
+      {/* Desktop: the full sortable/editable table. Hidden on phones, where an
+          8-column table put Amount — the one column that matters — about two
+          screens of horizontal scrolling off the right edge. */}
+      {!isMobile && (
       <div
         className="rounded-xl"
         style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}
@@ -1200,6 +1231,95 @@ export default function Transactions() {
         </div>
 
       </div>
+      )}
+
+      {/* Phone: one card per transaction. Amount is right-aligned and the
+          largest thing on the row; tapping opens the same drawer the table rows
+          open, so editing and recategorising still work. */}
+      {isMobile && (
+        <div
+          className="rounded-xl overflow-hidden"
+          style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}
+        >
+          {isLoading ? (
+            <div className="p-6 flex justify-center">
+              <Spinner />
+            </div>
+          ) : sortedRows.length === 0 ? (
+            <p style={{ textAlign: 'center', color: 'var(--color-text-muted)', padding: '32px 16px', fontSize: 13 }}>
+              {types.length === 0 && !showTransfers && !showDuplicates
+                ? 'All transaction types are hidden — adjust the Show filter.'
+                : (search || categories.length > 0)
+                  ? 'No transactions match your filters.'
+                  : 'No transactions found'}
+            </p>
+          ) : (
+            sortedRows.map((row) => {
+              const currentCategory = editState[row.id]?.category !== undefined
+                ? editState[row.id].category!
+                : row.category
+              const title = row.merchant_normalized || row.name || '—'
+              // Credits (income, reimbursements) read as money coming back.
+              const isCredit = row.amount < 0
+              return (
+                <button
+                  key={row.id}
+                  onClick={() => setSelectedRowId(row.id)}
+                  className="w-full text-left flex items-start gap-3 px-4 py-3"
+                  style={{
+                    borderBottom: '1px solid var(--color-border)',
+                    background: row.id === selectedRowId ? 'var(--color-accent-soft)' : 'transparent',
+                    opacity: row.is_duplicate ? 0.5 : 1,
+                    border: 'none', borderBottomWidth: 1, borderBottomStyle: 'solid',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <div className="flex-1 min-w-0">
+                    <p
+                      className="truncate"
+                      style={{
+                        fontSize: 14, fontWeight: 500, lineHeight: 1.3,
+                        color: row.is_transfer ? 'var(--color-text-muted)' : 'var(--color-text-primary)',
+                      }}
+                    >
+                      {title}
+                    </p>
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <span
+                        style={{
+                          width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+                          background: getCategoryColor(currentCategory),
+                        }}
+                      />
+                      <span className="truncate" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
+                        {currentCategory}
+                      </span>
+                      <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>·</span>
+                      <span style={{ fontSize: 11, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }}>
+                        {formatDate(row.date)}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex-shrink-0 text-right">
+                    <p
+                      style={{
+                        fontSize: 15, fontWeight: 600, fontFamily: 'ui-monospace, monospace',
+                        lineHeight: 1.3, whiteSpace: 'nowrap',
+                        color: isCredit ? 'var(--color-positive)' : 'var(--color-text-primary)',
+                      }}
+                    >
+                      {formatCurrency(row.amount)}
+                    </p>
+                    {row.pending && (
+                      <p style={{ fontSize: 10, color: 'var(--color-text-muted)', marginTop: 2 }}>pending</p>
+                    )}
+                  </div>
+                </button>
+              )
+            })
+          )}
+        </div>
+      )}
 
       {/* Merchant category suggestion toast — bottom-center, stacked above main toast (Task 5b) */}
       {merchantSuggestion && (
@@ -1342,8 +1462,11 @@ export default function Transactions() {
             zIndex: 10,
           }}
         >
-          <span style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>
-            {summary.transactions} transactions
+          <span
+            style={{ fontSize: 13, color: 'var(--color-text-muted)' }}
+            title="Rows shown here, including income and reimbursements"
+          >
+            {summary.transactions} shown
           </span>
           <span style={{ fontSize: 13, color: 'var(--color-text-secondary)' }} title="Spending, net of reimbursements">
             Spent <span style={{ fontFamily: 'monospace', fontSize: 15, fontWeight: 600, color: 'var(--color-negative)', marginLeft: 6 }}>{formatCurrency(summary.spent)}</span>

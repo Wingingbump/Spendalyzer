@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
@@ -33,6 +34,7 @@ export default function Categories({ embedded = false }: { embedded?: boolean })
   const { theme } = useTheme()
   const chartColors = theme === 'dark' ? CHART_COLORS_DARK : CHART_COLORS_LIGHT
   const [selectedCategory, setSelectedCategory] = useState<string>('')
+  const navigate = useNavigate()
   const [range, setRange] = useState('90d')
   const params = { range, institution, account }
 
@@ -104,6 +106,7 @@ export default function Categories({ embedded = false }: { embedded?: boolean })
                         key={i}
                         fill={chartColors[i % chartColors.length]}
                         opacity={selectedCategory && selectedCategory !== categories[i].category ? 0.4 : 1}
+                        style={{ cursor: 'pointer' }}
                       />
                     ))}
                   </Pie>
@@ -206,17 +209,32 @@ export default function Categories({ embedded = false }: { embedded?: boolean })
           style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}
         >
           <div
-            className="px-4 py-3"
+            className="px-4 py-3 flex items-start justify-between gap-3"
             style={{ borderBottom: '1px solid var(--color-border)' }}
           >
-            <p style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-primary)' }}>
-              {selectedCategory}
-            </p>
-            {!loadingDetail && (
-              <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 2 }}>
-                {categoryDetail.length} transactions · {formatCurrency(categoryDetail.reduce((s, t) => s + t.amount, 0))} total
+            <div>
+              <p style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                {selectedCategory}
               </p>
-            )}
+              {!loadingDetail && (
+                <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 2 }}>
+                  {categoryDetail.length} transactions · {formatCurrency(categoryDetail.reduce((s, t) => s + t.amount, 0))} total
+                </p>
+              )}
+            </div>
+            <button
+              onClick={() => navigate(
+                `/transactions?category=${encodeURIComponent(selectedCategory)}&range=${encodeURIComponent(range)}`
+              )}
+              style={{
+                flexShrink: 0, fontSize: 12, padding: '5px 10px', borderRadius: 7,
+                background: 'var(--color-surface-raise)', border: '1px solid var(--color-border)',
+                color: 'var(--color-text-secondary)', cursor: 'pointer',
+              }}
+              title="Open these in the ledger, where you can recategorise or edit them"
+            >
+              Open in ledger →
+            </button>
           </div>
           <div className="overflow-x-auto">
             <table>

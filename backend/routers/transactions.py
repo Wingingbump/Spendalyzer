@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from backend.dependencies import apply_filters, get_current_user
+from backend.serialization import df_to_records as _df_to_records
 from backend.limiter import limiter
 from core import insights as ins
 from core.db import (
@@ -14,16 +15,6 @@ from core.db import (
 )
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
-
-
-def _df_to_records(df: pd.DataFrame) -> list:
-    cleaned = df.where(pd.notna(df), None)
-    records = cleaned.to_dict(orient="records")
-    for row in records:
-        for k, v in row.items():
-            if hasattr(v, "isoformat"):
-                row[k] = v.isoformat()
-    return records
 
 
 class OverrideBody(BaseModel):

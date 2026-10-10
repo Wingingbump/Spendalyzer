@@ -45,12 +45,21 @@ api.interceptors.response.use(
 export interface User {
   id: number
   username: string
+  /**
+   * Server-side feature flags, so the client doesn't offer a route that would
+   * 503. The server enforces each flag on its own endpoints regardless — this
+   * is presentation only, never the access control.
+   */
+  features?: { advisor?: boolean }
 }
 
 export interface InsightsSummary {
   total_spent: number
   total_income: number
   total_reimbursements: number
+  this_month_gross: number
+  this_month_reimbursed: number
+  this_month_net: number
   total_credits: number
   transaction_count: number
   net_spend: number
@@ -61,6 +70,19 @@ export interface InsightsSummary {
   last_30_days: number
   last_30_days_delta: number
   last_30_days_delta_pct: number
+  // Current-month pace, computed server-side (core.insights.month_to_date) and
+  // shared with the Tracker so the two pages can't disagree.
+  month_pace: number
+  /** Last month's spend over the same stretch of days, for a like-for-like
+   *  headline comparison instead of part-month vs whole-month. */
+  prior_month_to_date: number
+  prior_month_to_date_days: number
+  delta_vs_prior_mtd: number
+  delta_vs_prior_mtd_pct: number
+  daily_rate: number
+  days_elapsed: number
+  days_in_month: number
+  days_left: number
   biggest_purchase: { amount: number; name: string; date: string } | null
   most_visited_merchant: { merchant: string; count: number; total: number } | null
   biggest_spending_day: { date: string; total: number } | null
@@ -590,6 +612,8 @@ export interface RecurringTransaction {
   frequency: 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'annual'
   occurrences: number
   last_date: string
+  /** This charge's cost per month, amortised across its billing cycle. */
+  monthly_equivalent: number
   source?: 'auto' | 'manual'
   rule_id?: number
 }

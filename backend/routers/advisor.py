@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.dependencies import get_current_user
+from backend.features import require_advisor_enabled
 from backend.limiter import limiter
 from fastapi import Request
 from core.db import (
@@ -25,6 +26,7 @@ from core.db import (
 )
 from core.embeddings import get_query_embedding, get_embedding
 from core.insights import load_data, get_spending, spending_by_category, spending_by_month
+from core import insights as insights_mod
 
 router = APIRouter(prefix="/advisor", tags=["advisor"])
 
@@ -314,16 +316,9 @@ def _fetch_budgets_with_spend(user_id: int, df: pd.DataFrame) -> list[dict]:
     if not budgets:
         return []
 
-    cat_spend: dict[str, float] = {}
-    if not df.empty and "is_transfer" in df.columns:
-        today = date.today()
-        month_start = pd.Timestamp(today.replace(day=1))
-        # Net reimbursements against their category (matches the Overview and the
-        # right-panel budget tab) instead of summing raw debits.
-        spending = get_spending(df)
-        month_df = spending[spending["date"] >= month_start]
-        if "category" in month_df.columns and not month_df.empty:
-            cat_spend = month_df.groupby("category")["amount"].sum().to_dict()
+    # Shared helper — same netting and zero floor as the Overview and the
+    # right-panel budget tab, so all three report one number per category.
+    cat_spend = insights_mod.category_spend_for_month(df) if not df.empty else {}
 
     for b in budgets:
         b["spent"] = round(float(cat_spend.get(b["category"], 0.0)), 2)
@@ -730,31 +725,19 @@ def _build_system_prompt(user_id: int, user_message: str) -> str:
                 direction = "up" if delta > 0 else "down"
                 snapshot_section += f"- Savings rate trend: {direction} {abs(delta):.1f}pp vs prior period\n"
 
-        # Spending velocity — current-month spend prorated to end of month
+        # Spending velocity — current-month spend prorated to end of month.
+        # Shares core.insights.month_to_date with the Overview and the Tracker.
+        # The local copy this replaced filtered on type == "debit", so it quoted
+        # GROSS spend while every screen showed net — the advisor would claim
+        # "$147 spent this month" against a dashboard reading $61.69.
         if not df.empty:
             try:
-                _today = date.today()
-                _month_start = pd.Timestamp(_today.replace(day=1))
-                # last day of current month
-                if _today.month == 12:
-                    _next_month = _today.replace(year=_today.year + 1, month=1, day=1)
-                else:
-                    _next_month = _today.replace(month=_today.month + 1, day=1)
-                _days_in_month = (_next_month - _today.replace(day=1)).days
-                _days_elapsed = _today.day
-
-                _mtd = df[
-                    (df["date"] >= _month_start) &
-                    (~df.get("is_transfer", pd.Series(False, index=df.index)).fillna(False)) &
-                    (~df.get("is_duplicate", pd.Series(False, index=df.index)).fillna(False)) &
-                    (df["type"] == "debit")
-                ]["amount"].sum()
-
-                if _mtd > 0 and _days_elapsed > 0:
-                    _pace = (_mtd / _days_elapsed) * _days_in_month
+                _mtd = insights_mod.month_to_date(df)
+                if _mtd["spent"] > 0:
                     snapshot_section += (
-                        f"- This month so far: ${_mtd:,.0f} spent ({_days_elapsed}/{_days_in_month} days) "
-                        f"— on pace for ${_pace:,.0f} by month-end\n"
+                        f"- This month so far: ${_mtd['spent']:,.0f} spent "
+                        f"({_mtd['days_elapsed']}/{_mtd['days_in_month']} days) "
+                        f"— on pace for ${_mtd['pace']:,.0f} by month-end\n"
                     )
             except Exception:
                 pass
@@ -902,7 +885,8 @@ You CAN and SHOULD:
 
 @router.post("/chat", response_model=ChatResponse)
 @limiter.limit("30/minute")
-def chat(request: Request, body: ChatRequest, current_user: dict = Depends(get_current_user)):
+def chat(request: Request, body: ChatRequest, current_user: dict = Depends(get_current_user),
+         _: None = Depends(require_advisor_enabled)):
     user_id = current_user["id"]
 
     system_prompt = _build_system_prompt(user_id, body.message)
@@ -966,7 +950,8 @@ def chat(request: Request, body: ChatRequest, current_user: dict = Depends(get_c
 
 @router.post("/chat/stream")
 @limiter.limit("30/minute")
-def chat_stream(request: Request, body: ChatRequest, current_user: dict = Depends(get_current_user)):
+def chat_stream(request: Request, body: ChatRequest, current_user: dict = Depends(get_current_user),
+                _: None = Depends(require_advisor_enabled)):
     user_id = current_user["id"]
 
     system_prompt = _build_system_prompt(user_id, body.message)
@@ -1043,7 +1028,8 @@ def chat_stream(request: Request, body: ChatRequest, current_user: dict = Depend
 
 @router.post("/onboard", response_model=OnboardResponse)
 @limiter.limit("30/minute")
-def onboard(request: Request, body: OnboardRequest, current_user: dict = Depends(get_current_user)):
+def onboard(request: Request, body: OnboardRequest, current_user: dict = Depends(get_current_user),
+            _: None = Depends(require_advisor_enabled)):
     user_id = current_user["id"]
 
     safe_history = [
@@ -1192,7 +1178,8 @@ def tracker(current_user: dict = Depends(get_current_user)):
     budgets = _fetch_budgets_with_spend(user_id, df)
     for b in budgets:
         cat = b["category"]
-        b["pace"] = round((b["spent"] / today.day) * days_in_month, 2) if today.day and not mtd_df.empty else 0
+        # Same straight-line projection as the headline pace, off the floored spend.
+        b["pace"] = round((b["spent"] / today.day) * days_in_month, 2) if today.day else 0.0
 
         if not mtd_df.empty and "category" in mtd_df.columns:
             cat_txns = (
@@ -1244,14 +1231,11 @@ def tracker(current_user: dict = Depends(get_current_user)):
             s["created_at"] = s["created_at"].isoformat()
 
     # ── MTD summary ───────────────────────────────────────────────────────────
-    mtd_total = round(float(mtd_df["amount"].sum()), 2) if not mtd_df.empty else 0.0
-    mtd_pace = round((mtd_total / today.day) * days_in_month, 2) if today.day else 0.0
+    # Shared with /insights/summary so the Tracker strip and the Overview hero
+    # cannot report different values for the same month.
+    mtd = insights_mod.month_to_date(df)
     total_budget = sum(b["amount"] for b in budgets)
-    total_recurring_monthly = sum(
-        r["amount"] * {"weekly": 4.33, "biweekly": 2.17, "monthly": 1,
-                       "quarterly": 1 / 3, "annual": 1 / 12}.get(r["frequency"], 1)
-        for r in recurring
-    )
+    total_recurring_monthly = sum(r["monthly_equivalent"] for r in recurring)
 
     return {
         "goals": goals,
@@ -1259,10 +1243,10 @@ def tracker(current_user: dict = Depends(get_current_user)):
         "recurring": recurring,
         "snapshots": snapshots,
         "summary": {
-            "mtd_spent": mtd_total,
-            "mtd_pace": mtd_pace,
-            "days_elapsed": today.day,
-            "days_in_month": days_in_month,
+            "mtd_spent": mtd["spent"],
+            "mtd_pace": mtd["pace"],
+            "days_elapsed": mtd["days_elapsed"],
+            "days_in_month": mtd["days_in_month"],
             "total_budget": round(total_budget, 2),
             "total_recurring_monthly": round(total_recurring_monthly, 2),
         },
