@@ -294,24 +294,54 @@ def health(current_user: dict = Depends(get_current_user)):
                     "message": f"{len(stuck)} transaction(s) pending for {STUCK_PENDING_DAYS}+ days (oldest: {oldest_days}d)",
                 })
 
-    # ── 4. Transaction volume drop ────────────────────────────────────────────
-    # Flag if the last 7 days' rate is < 40% of the prior 30-day rate,
-    # but only for users whose accounts show meaningful regular activity (≥ 2/day avg).
-    spend_df_all = df[df.get("is_transfer", pd.Series(False, index=df.index)).fillna(False) == False] \
-        if "is_transfer" in df.columns else df
-    last_30 = spend_df_all[spend_df_all["date"] >= today - datetime.timedelta(days=30)]
-    last_7  = spend_df_all[spend_df_all["date"] >= today - datetime.timedelta(days=7)]
-    per_day_30 = len(last_30) / 30
-    per_day_7  = len(last_7) / 7
+    # ── 4. A feed that has gone quiet (early warning) ────────────────────────
+    # This used to compare the last 7 days' overall transaction rate against the
+    # prior 30 and warn when it halved. That is not a data-health signal: a
+    # quiet week is almost always a quiet week, and reporting "spent less" as
+    # "Data issue detected" (next to a Full history sync button that changes
+    # nothing) teaches people to ignore the banner that matters.
+    #
+    # A broken feed does not look like a uniform slowdown across every account.
+    # It looks like ONE source going silent while the others keep reporting. So
+    # check per institution, and only for ones with a regular enough history to
+    # make silence meaningful. This is the softer, earlier cousin of the
+    # 14-day stale_institution check above.
+    QUIET_DAYS = 7
+    BASELINE_DAYS = 90
+    MIN_BASELINE_TXNS = 24  # ~2/week over the baseline window
 
-    if per_day_30 >= 2.0 and per_day_7 < per_day_30 * 0.4:
-        warnings.append({
-            "type": "volume_drop",
-            "severity": "warning",
-            "rate_30d": round(per_day_30, 1),
-            "rate_7d": round(per_day_7, 1),
-            "message": f"Transaction volume down — {per_day_7:.1f}/day this week vs {per_day_30:.1f}/day prior 30 days",
-        })
+    clean = (
+        df[~df["is_transfer"].fillna(False)] if "is_transfer" in df.columns else df
+    )
+    if "institution" in clean.columns and not clean.empty:
+        quiet_cutoff = today - datetime.timedelta(days=QUIET_DAYS)
+        baseline_cutoff = today - datetime.timedelta(days=BASELINE_DAYS)
+
+        for institution, grp in clean.groupby("institution"):
+            if institution in warned_institutions:
+                continue  # already has a more authoritative connection warning
+            # Manually-added rows are not a feed and cannot go stale.
+            if str(institution).strip().lower() == "manual":
+                continue
+
+            baseline = grp[(grp["date"] >= baseline_cutoff) & (grp["date"] < quiet_cutoff)]
+            if len(baseline) < MIN_BASELINE_TXNS:
+                continue  # too sparse for silence to mean anything
+
+            if len(grp[grp["date"] >= quiet_cutoff]) == 0:
+                per_week = len(baseline) / (BASELINE_DAYS / 7)
+                last_seen = grp["date"].max()
+                warnings.append({
+                    "type": "feed_quiet",
+                    "severity": "warning",
+                    "institution": institution,
+                    "last_seen": last_seen.isoformat(),
+                    "expected_per_week": round(per_week, 1),
+                    "message": (
+                        f"{institution} · nothing in {QUIET_DAYS} days "
+                        f"(usually ~{per_week:.0f}/week) — the connection may have dropped"
+                    ),
+                })
 
     # ── 5. Missing recurring transactions ────────────────────────────────────
     # Only look at the last 6 months to avoid flagging cancelled subscriptions.

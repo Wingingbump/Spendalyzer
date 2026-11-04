@@ -51,6 +51,8 @@ export interface User {
    * is presentation only, never the access control.
    */
   features?: { advisor?: boolean }
+  /** True for throwaway "Try the demo" accounts, which expire after 24h. */
+  is_demo?: boolean
 }
 
 export interface InsightsSummary {
@@ -83,9 +85,9 @@ export interface InsightsSummary {
   days_elapsed: number
   days_in_month: number
   days_left: number
-  biggest_purchase: { amount: number; name: string; date: string } | null
+  biggest_purchase: { amount: number; name: string; date: string; date_iso: string; merchant: string } | null
   most_visited_merchant: { merchant: string; count: number; total: number } | null
-  biggest_spending_day: { date: string; total: number } | null
+  biggest_spending_day: { date: string; date_iso: string; total: number } | null
 }
 
 export interface MonthlyData {
@@ -221,6 +223,10 @@ export const authApi = {
   login: (username: string, password: string) =>
     api.post<User>('/auth/login', { username, password }).then((r) => r.data),
 
+  /** Create a throwaway demo account seeded with a year of sample data and
+   *  sign into it. No registration, no personal data. */
+  demo: () => api.post<User>('/auth/demo').then((r) => r.data),
+
   register: (username: string, password: string, first_name: string, last_name: string, email: string, phone: string) =>
     api.post<{ message: string }>('/auth/register', { username, password, first_name, last_name, email, phone }).then((r) => r.data),
 
@@ -247,7 +253,7 @@ export const authApi = {
 
 export interface HealthWarning {
   type: 'item_error' | 'sync_failure' | 'consent_expired' | 'consent_expiring'
-      | 'stale_institution' | 'stuck_pending' | 'volume_drop' | 'missing_recurring'
+      | 'stale_institution' | 'stuck_pending' | 'feed_quiet' | 'missing_recurring'
   severity: 'warning' | 'error'
   message: string
   // connection / item fields
@@ -260,9 +266,8 @@ export interface HealthWarning {
   // stuck_pending fields
   count?: number
   oldest_days?: number
-  // volume_drop fields
-  rate_30d?: number
-  rate_7d?: number
+  // feed_quiet fields
+  expected_per_week?: number
   // missing_recurring fields
   merchant?: string
   cadence?: string

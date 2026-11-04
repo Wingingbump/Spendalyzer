@@ -18,8 +18,49 @@ import RangeSelect from '../components/RangeSelect'
 import Spinner from '../components/Spinner'
 
 // Custom tooltip for bar chart
-function MonthlyTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number }>; label?: string }) {
+type MonthPoint = { total: number; count: number; label: string; delta: number | null; isCurrent: boolean }
+
+function MonthlyTooltip({ active, payload, label }: {
+  active?: boolean
+  payload?: Array<{ value: number; payload: MonthPoint }>
+  label?: string
+}) {
   if (!active || !payload?.length) return null
+  const d = payload[0].payload
+  const up = (d.delta ?? 0) > 0
+  return (
+    <div
+      className="rounded-lg px-3 py-2"
+      style={{ background: 'var(--color-surface-raise)', border: '1px solid var(--color-border)', fontSize: 12 }}
+    >
+      <p style={{ color: 'var(--color-text-muted)', marginBottom: 2 }}>
+        {label}{d.isCurrent ? ' (so far)' : ''}
+      </p>
+      <p style={{ color: 'var(--color-text-primary)', fontFamily: 'monospace', fontWeight: 600 }}>
+        {formatCurrency(payload[0].value)}
+      </p>
+      <p style={{ color: 'var(--color-text-muted)', marginTop: 3 }}>
+        {d.count} {d.count === 1 ? 'purchase' : 'purchases'}
+      </p>
+      {d.delta !== null && (
+        <p style={{ marginTop: 1, color: up ? 'var(--color-negative)' : 'var(--color-positive)' }}>
+          {up ? '↑' : '↓'} {formatCurrency(Math.abs(d.delta))} vs previous month
+        </p>
+      )}
+      <p style={{ color: 'var(--color-text-muted)', marginTop: 4, fontSize: 11 }}>
+        Click to see these transactions
+      </p>
+    </div>
+  )
+}
+
+function DowTooltip({ active, payload, label }: {
+  active?: boolean
+  payload?: Array<{ value: number; payload: { count: number } }>
+  label?: string
+}) {
+  if (!active || !payload?.length) return null
+  const weeks = payload[0].payload?.count ?? 0
   return (
     <div
       className="rounded-lg px-3 py-2"
@@ -29,20 +70,12 @@ function MonthlyTooltip({ active, payload, label }: { active?: boolean; payload?
       <p style={{ color: 'var(--color-text-primary)', fontFamily: 'monospace', fontWeight: 600 }}>
         {formatCurrency(payload[0].value)}
       </p>
-    </div>
-  )
-}
-
-function DowTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number }>; label?: string }) {
-  if (!active || !payload?.length) return null
-  return (
-    <div
-      className="rounded-lg px-3 py-2"
-      style={{ background: 'var(--color-surface-raise)', border: '1px solid var(--color-border)', fontSize: 12 }}
-    >
-      <p style={{ color: 'var(--color-text-muted)', marginBottom: 2 }}>{label}</p>
-      <p style={{ color: 'var(--color-text-primary)', fontFamily: 'monospace', fontWeight: 600 }}>
-        {formatCurrency(payload[0].value)}
+      {/* The bar is a median across weeks, not a total. Without saying so the
+          number reads as "all the money I spent on Mondays". */}
+      <p style={{ color: 'var(--color-text-muted)', marginTop: 3 }}>
+        {weeks > 0
+          ? `typical ${label}, across ${weeks} ${weeks === 1 ? 'week' : 'weeks'}`
+          : 'not enough history yet'}
       </p>
     </div>
   )
@@ -245,7 +278,7 @@ function DataHealthCard() {
                   w.type === 'item_error' || w.type === 'consent_expired' || w.type === 'sync_failure' ? '⚠ ' :
                   w.type === 'consent_expiring' ? '🔑 ' :
                   w.type === 'stuck_pending' ? '⏳ ' :
-                  w.type === 'volume_drop' ? '📉 ' :
+                  w.type === 'feed_quiet' ? '🔌 ' :
                   w.type === 'missing_recurring' ? '↻ ' : '⬤ '
                 return (
                   <p key={i} style={{ fontSize: 12, color: 'var(--color-text-secondary)', lineHeight: 1.45 }}>
@@ -384,6 +417,15 @@ export default function Overview() {
 
   // ── Monthly chart helpers ──────────────────────────────────────────────────
   const currentMonthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`
+
+  // Precomputed so the tooltip can show the change against the preceding bar
+  // without re-deriving it on every hover.
+  const monthlySeries = monthly.map((m, i) => ({
+    ...m,
+    label: formatMonth(m.month),
+    delta: i > 0 ? Math.round((m.total - monthly[i - 1].total) * 100) / 100 : null,
+    isCurrent: m.month === currentMonthKey,
+  }))
   // Averaged over completed months only. The month in progress is a part-month
   // total, so including it drags the average down all month and makes every
   // finished bar look above average.
@@ -526,10 +568,12 @@ export default function Overview() {
                     {item.op}
                   </div>
                 )}
-                <div
-                  className="rounded-lg px-4 py-3"
+                <button
+                  onClick={() => navigate(`/transactions?range=${currentMonthKey}`)}
+                  title={`See this month's transactions`}
+                  className="rounded-lg px-4 py-3 text-left"
                   style={{
-                    flex: '1 1 120px', minWidth: 120,
+                    flex: '1 1 120px', minWidth: 120, cursor: 'pointer',
                     background: item.emphasize ? 'var(--color-accent-soft)' : 'var(--color-bg)',
                     border: `1px solid ${item.emphasize ? 'color-mix(in srgb, var(--color-accent) 30%, transparent)' : 'var(--color-border)'}`,
                   }}
@@ -540,7 +584,7 @@ export default function Overview() {
                   <p style={{ fontSize: 20, fontWeight: 700, fontFamily: 'ui-monospace, monospace', color: item.color, lineHeight: 1 }}>
                     {formatCurrency(item.value)}
                   </p>
-                </div>
+                </button>
               </Fragment>
             ))}
           </div>
@@ -573,7 +617,17 @@ export default function Overview() {
             : <div className="flex items-center justify-center" style={{ height: 200 }}><p style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>No data</p></div>
         ) : (
           <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={monthly.map((m) => ({ ...m, label: formatMonth(m.month) }))}>
+            <BarChart
+              data={monthlySeries}
+              onClick={(e) => {
+                // recharts hands back the clicked datum on the chart, not the
+                // Bar — clicking the gap between bars yields nothing, hence
+                // the guard.
+                const m = e?.activePayload?.[0]?.payload as { month?: string } | undefined
+                if (m?.month) navigate(`/transactions?range=${encodeURIComponent(m.month)}`)
+              }}
+              style={{ cursor: 'pointer' }}
+            >
               <XAxis
                 dataKey="label"
                 tick={{ fill: 'var(--color-text-muted)', fontSize: 11 }}
@@ -598,11 +652,12 @@ export default function Overview() {
                 />
               )}
               <Bar dataKey="total" radius={[3, 3, 0, 0]}>
-                {monthly.map((m) => (
+                {monthlySeries.map((m) => (
                   <Cell
                     key={m.month}
-                    fill={m.month === currentMonthKey ? 'var(--color-accent)' : chartColors[0]}
-                    opacity={m.month === currentMonthKey ? 1 : 0.7}
+                    fill={m.isCurrent ? 'var(--color-accent)' : chartColors[0]}
+                    opacity={m.isCurrent ? 1 : 0.7}
+                    style={{ cursor: 'pointer' }}
                   />
                 ))}
               </Bar>
@@ -726,8 +781,15 @@ export default function Overview() {
       {/* Highlight strip — 3 stats in one compact card */}
       <Card>
         <div className="grid grid-cols-1 sm:grid-cols-3">
-          {/* Biggest Purchase */}
-          <div className="flex items-start gap-2.5 pr-4">
+          {/* Biggest Purchase -> that merchant's history */}
+          <button
+            onClick={() => summary?.biggest_purchase &&
+              navigate(`/transactions?merchant=${encodeURIComponent(summary.biggest_purchase.merchant || summary.biggest_purchase.name)}`)}
+            disabled={!summary?.biggest_purchase}
+            title="See this merchant's transactions"
+            className="flex items-start gap-2.5 pr-4 text-left"
+            style={{ background: 'none', border: 'none', cursor: summary?.biggest_purchase ? 'pointer' : 'default' }}
+          >
             <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: 'var(--color-accent-soft)' }}>
               <ShoppingBag size={13} style={{ color: 'var(--color-accent)' }} />
             </div>
@@ -741,12 +803,16 @@ export default function Overview() {
                 </>
               ) : <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>—</p>}
             </div>
-          </div>
+          </button>
 
-          {/* Most Visited */}
-          <div
-            className="flex items-start gap-2.5 px-4 pt-4 sm:pt-0 sm:pl-4 border-t sm:border-t-0 sm:border-l"
-            style={{ borderColor: 'var(--color-border)' }}
+          {/* Most Visited -> that merchant's history */}
+          <button
+            onClick={() => summary?.most_visited_merchant &&
+              navigate(`/transactions?merchant=${encodeURIComponent(summary.most_visited_merchant.merchant)}`)}
+            disabled={!summary?.most_visited_merchant}
+            title="See this merchant's transactions"
+            className="flex items-start gap-2.5 px-4 pt-4 sm:pt-0 sm:pl-4 border-t sm:border-t-0 sm:border-l text-left"
+            style={{ borderColor: 'var(--color-border)', background: 'none', cursor: summary?.most_visited_merchant ? 'pointer' : 'default' }}
           >
             <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: 'rgba(90,191,138,0.10)' }}>
               <Store size={13} style={{ color: 'var(--color-positive)' }} />
@@ -760,12 +826,17 @@ export default function Overview() {
                 </>
               ) : <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>—</p>}
             </div>
-          </div>
+          </button>
 
-          {/* Biggest Day */}
-          <div
-            className="flex items-start gap-2.5 px-4 pt-4 sm:pt-0 sm:pl-4 border-t sm:border-t-0 sm:border-l"
-            style={{ borderColor: 'var(--color-border)' }}
+          {/* Biggest Day -> just that day. apply_filters() understands
+              custom:<start>:<end>, so a single date is the same date twice. */}
+          <button
+            onClick={() => summary?.biggest_spending_day &&
+              navigate(`/transactions?range=custom:${summary.biggest_spending_day.date_iso}:${summary.biggest_spending_day.date_iso}`)}
+            disabled={!summary?.biggest_spending_day}
+            title="See that day's transactions"
+            className="flex items-start gap-2.5 px-4 pt-4 sm:pt-0 sm:pl-4 border-t sm:border-t-0 sm:border-l text-left"
+            style={{ borderColor: 'var(--color-border)', background: 'none', cursor: summary?.biggest_spending_day ? 'pointer' : 'default' }}
           >
             <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: 'rgba(232,96,96,0.10)' }}>
               <Calendar size={13} style={{ color: 'var(--color-negative)' }} />
@@ -779,7 +850,7 @@ export default function Overview() {
                 </>
               ) : <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>—</p>}
             </div>
-          </div>
+          </button>
         </div>
       </Card>
     </div>

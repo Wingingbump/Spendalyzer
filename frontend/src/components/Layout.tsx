@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { X } from 'lucide-react'
 import Sidebar from './Sidebar'
+import DemoBanner from './DemoBanner'
 import RightPanel from './RightPanel'
 import BottomNav from './BottomNav'
 import MobileHeader from './MobileHeader'
@@ -154,6 +155,8 @@ export default function Layout({ children }: LayoutProps) {
         >
           {isMobile && <MobileHeader />}
           <div className={isMobile ? 'p-4' : 'p-6'}>
+            {/* Renders only for demo accounts; a no-op for everyone else. */}
+            <DemoBanner />
             {!isMobile && <FilterChips />}
             {children}
           </div>

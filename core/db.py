@@ -66,7 +66,15 @@ class _Conn:
         return self._cur
 
     def executemany(self, sql: str, seq):
-        self._cur.executemany(sql, seq)
+        # psycopg2's own executemany sends one round trip per row. Against a
+        # remote database that is ~6.5ms each, so seeding the demo account's 784
+        # transactions took 5s and a first full Plaid sync (up to two years) is
+        # far worse. execute_batch groups them into one statement per page.
+        #
+        # It returns no rows and leaves rowcount aggregated, so it is only a
+        # drop-in for the fire-and-forget bulk writes we use it for — no caller
+        # reads a result from executemany. Use execute() for anything RETURNING.
+        psycopg2.extras.execute_batch(self._cur, sql, seq, page_size=200)
         return self._cur
 
     def commit(self):
@@ -474,6 +482,16 @@ def _run_migrations():
         conn.execute("""
             ALTER TABLE users ADD COLUMN IF NOT EXISTS deletion_scheduled_at TIMESTAMPTZ DEFAULT NULL
         """)
+        # Throwaway accounts created by "Try the demo". Flagged so the rest of
+        # the app can refuse the things that make no sense for them (syncing a
+        # bank they never connected) and so they're identifiable in the data.
+        # Cleanup rides on deletion_scheduled_at and the existing hourly purge.
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT FALSE"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS users_demo_idx ON users (is_demo) WHERE is_demo"
+        )
 
         # Fix missing ON DELETE CASCADE on early tables
         for tbl, fkey in [
@@ -831,6 +849,45 @@ def create_user(username: str, password_hash: str, first_name: str = "", last_na
             (username.strip(), password_hash, first_name.strip(), last_name.strip(), email.strip().lower(), phone.strip())
         ).fetchone()
     return row["id"]
+
+
+def create_demo_user(username: str, password_hash: str, ttl_hours: int = 24) -> int:
+    """Create a throwaway demo account that expires on its own.
+
+    deletion_scheduled_at is what purge_deleted_users() already reaps every
+    hour, and 32 of the 33 user_id foreign keys cascade, so the account and all
+    of its generated data disappear with no extra cleanup code. email_verified
+    is set because /auth/demo issues the session directly and never goes through
+    the login path that checks it.
+    """
+    with get_conn() as conn:
+        conn.execute("SET LOCAL app.current_user_id = 'bypass'")
+        row = conn.execute(
+            f"""INSERT INTO users (username, password, email_verified, is_active,
+                                   is_demo, deletion_scheduled_at)
+                VALUES (%s, %s, TRUE, TRUE, TRUE, NOW() + INTERVAL '{int(ttl_hours)} hours')
+                RETURNING id""",
+            (username, password_hash),
+        ).fetchone()
+    return row["id"]
+
+
+def count_live_demo_users() -> int:
+    """Demo accounts that haven't expired yet — the ceiling /auth/demo enforces."""
+    with get_conn() as conn:
+        conn.execute("SET LOCAL app.current_user_id = 'bypass'")
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM users "
+            "WHERE is_demo AND (deletion_scheduled_at IS NULL OR deletion_scheduled_at > NOW())"
+        ).fetchone()
+    return int(row["n"]) if row else 0
+
+
+def user_is_demo(user_id: int) -> bool:
+    with get_conn() as conn:
+        conn.execute("SET LOCAL app.current_user_id = 'bypass'")
+        row = conn.execute("SELECT is_demo FROM users WHERE id = %s", (user_id,)).fetchone()
+    return bool(row and row["is_demo"])
 
 
 def get_user_by_email(email: str) -> dict | None:
@@ -1751,6 +1808,17 @@ def bulk_apply_category_override(user_id: int, transaction_ids: list, category: 
 
 
 # ── Dismissed duplicates ─────────────────────────────────────────────────────────
+
+def upsert_budget(user_id: int, category: str, amount: float, period: str = "monthly") -> None:
+    """Set a category's budget. Shared by the workspace router and demo seeding."""
+    with get_user_conn(user_id) as conn:
+        conn.execute("""
+            INSERT INTO budgets (user_id, category, amount, period)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (user_id, category)
+            DO UPDATE SET amount = EXCLUDED.amount, period = EXCLUDED.period
+        """, (user_id, category, amount, period))
+
 
 def get_dismissed_duplicate_pairs(user_id: int) -> set:
     """Return set of frozensets({id_a, id_b}) for pairs the user has dismissed."""

@@ -19,7 +19,7 @@ from core.db import (
     consume_refresh_token, store_refresh_token, revoke_user_refresh_tokens,
     create_email_verification_token, consume_email_verification_token,
     create_password_reset_token, consume_password_reset_token,
-    get_last_synced_at,
+    get_last_synced_at, user_is_demo,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -92,6 +92,38 @@ def login(request: Request, body: LoginBody, response: Response, background_task
     background_tasks.add_task(_background_warmup, user["id"])
 
     return {"id": user["id"], "username": user["username"]}
+
+
+@router.post("/demo")
+@limiter.limit("5/hour")
+def demo(request: Request, response: Response, background_tasks: BackgroundTasks):
+    """Create a throwaway demo account, seed a year of sample data, sign in.
+
+    Deliberately does not go through /login: that path requires a verified
+    email and kicks off a background Plaid sync, neither of which applies to an
+    account with no real bank behind it.
+
+    Rate limited per IP and capped globally in core.demo, because each call
+    writes ~800 rows.
+    """
+    from core.demo import DemoCapacityError, provision_demo_user
+
+    try:
+        user_id, username = provision_demo_user()
+    except DemoCapacityError:
+        raise HTTPException(
+            status_code=503,
+            detail="Too many demo sessions right now. Please try again shortly.",
+        )
+
+    set_auth_cookies(response, user_id, username)
+
+    # Build the DataFrame cache off the request. Classifying ~800 fresh rows
+    # takes several seconds, and a demo visitor shouldn't meet that as a blank
+    # Overview on their first click.
+    background_tasks.add_task(_background_warmup, user_id)
+
+    return {"id": user_id, "username": username, "is_demo": True}
 
 
 @router.post("/register")
@@ -221,5 +253,6 @@ def me(current_user: dict = Depends(get_current_user)):
     return {
         "id": current_user["id"],
         "username": current_user["username"],
+        "is_demo": user_is_demo(current_user["id"]),
         "features": {"advisor": advisor_enabled()},
     }

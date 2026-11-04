@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from backend.dependencies import get_current_user
 from backend.serialization import df_to_records as _df_to_records
 from core import insights as ins
-from core.db import get_user_conn
+from core.db import get_user_conn, upsert_budget as db_upsert_budget
 
 router = APIRouter(prefix="/workspace", tags=["workspace"])
 
@@ -52,14 +52,7 @@ def list_budgets(current_user: dict = Depends(get_current_user)):
 
 @router.put("/budgets/{category}")
 def upsert_budget(category: str, body: BudgetBody, current_user: dict = Depends(get_current_user)):
-    user_id = current_user["id"]
-    with get_user_conn(user_id) as conn:
-        conn.execute("""
-            INSERT INTO budgets (user_id, category, amount, period)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (user_id, category)
-            DO UPDATE SET amount = EXCLUDED.amount, period = EXCLUDED.period
-        """, (user_id, category, body.amount, body.period))
+    db_upsert_budget(current_user["id"], category, body.amount, body.period)
     return {"ok": True}
 
 

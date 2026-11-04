@@ -1,6 +1,7 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import { authApi } from '../lib/api'
 import {
   BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell,
   PieChart, Pie,
@@ -62,7 +63,7 @@ const FEATURES = [
 
 export default function Welcome() {
   const { theme } = useTheme()
-  const { user } = useAuth()
+  const { user, setUser } = useAuth()
   const navigate = useNavigate()
   const palette = theme === 'dark' ? CHART_COLORS_DARK : CHART_COLORS_LIGHT
   const accent = palette[0]
@@ -81,6 +82,30 @@ export default function Welcome() {
 
   const ctaLabel = user ? 'Open dashboard' : 'Sign in'
   const ctaTo = user ? '/overview' : '/login'
+
+  // "Try the demo" provisions a throwaway account seeded with a year of sample
+  // data, so a visitor can use the real app without handing over bank details.
+  // Seeding writes ~800 rows, so the button reports progress rather than
+  // looking dead for a couple of seconds.
+  const [demoLoading, setDemoLoading] = useState(false)
+  const [demoError, setDemoError] = useState<string | null>(null)
+  const startDemo = async () => {
+    setDemoLoading(true)
+    setDemoError(null)
+    try {
+      const u = await authApi.demo()
+      setUser(u)
+      navigate('/overview', { replace: true })
+    } catch (e: unknown) {
+      const status = (e as { response?: { status?: number } })?.response?.status
+      setDemoError(
+        status === 503
+          ? 'Demo sessions are busy right now — please try again in a minute.'
+          : 'Could not start the demo. Please try again.'
+      )
+      setDemoLoading(false)
+    }
+  }
 
   const peakMonth = MOCK_MONTHLY.reduce((m, x) => (x.total > m.total ? x : m), MOCK_MONTHLY[0])
 
@@ -119,6 +144,20 @@ export default function Welcome() {
           >
             {user ? 'Open dashboard' : 'Get started'} <ArrowRight size={16} />
           </Link>
+          {!user && (
+            <button
+              onClick={startDemo}
+              disabled={demoLoading}
+              className="rounded-lg px-5 py-2.5"
+              style={{
+                border: '1px solid var(--color-border)', color: 'var(--color-text-primary)',
+                fontSize: 14, fontWeight: 500, background: 'transparent',
+                cursor: demoLoading ? 'wait' : 'pointer', opacity: demoLoading ? 0.6 : 1,
+              }}
+            >
+              {demoLoading ? 'Building sample data…' : 'Try the demo'}
+            </button>
+          )}
           <a
             href="#preview"
             className="rounded-lg px-5 py-2.5"
@@ -127,6 +166,11 @@ export default function Welcome() {
             See preview
           </a>
         </div>
+        {demoError && (
+          <p className="mt-3" style={{ fontSize: 13, color: 'var(--color-negative)' }}>
+            {demoError}
+          </p>
+        )}
       </section>
 
       {/* Preview panels */}

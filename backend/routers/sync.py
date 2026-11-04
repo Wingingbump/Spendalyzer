@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from backend.dependencies import get_current_user
 from backend.limiter import limiter
-from core.db import get_last_synced_at
+from core.db import get_last_synced_at, user_is_demo
 from core import insights as ins
 
 router = APIRouter(prefix="/sync", tags=["sync"])
@@ -15,6 +15,15 @@ def sync(
     current_user: dict = Depends(get_current_user),
     full_sync: bool = Query(False),
 ):
+    # A demo account has no real Plaid item behind it; its access token is
+    # deliberate nonsense. Refuse before we try to use it, so the failure is a
+    # clear message rather than a Plaid error surfacing as "Sync failed".
+    if user_is_demo(current_user["id"]):
+        raise HTTPException(
+            status_code=400,
+            detail="This is a demo account — its sample data is already loaded.",
+        )
+
     try:
         import services.pull as pull_service
         # main() returns the number of transactions it inserted.

@@ -606,6 +606,9 @@ def biggest_purchase(df: pd.DataFrame) -> dict | None:
         "merchant": row["merchant_normalized"],
         "amount": round(row["amount"], 2),
         "date": row["date"].strftime("%b %d, %Y"),
+        # Machine-readable twin of `date`, so the UI can deep-link to this day
+        # without re-parsing a localised display string.
+        "date_iso": row["date"].strftime("%Y-%m-%d"),
         "category": row["category"],
         "institution": row["institution"]
     })
@@ -637,6 +640,7 @@ def biggest_spending_day(df: pd.DataFrame) -> dict | None:
     day = by_day.idxmax()
     return clean_dict({
         "date": day.strftime("%b %d, %Y"),
+        "date_iso": day.strftime("%Y-%m-%d"),
         "total": round(by_day.max(), 2)
     })
 
