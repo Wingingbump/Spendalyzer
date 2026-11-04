@@ -3,6 +3,7 @@ import { SlidersHorizontal, X } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useFilters } from '../context/FilterContext'
 import { insightsApi } from '../lib/api'
+import { formatAccountOption } from '../lib/utils'
 
 export default function MobileHeader() {
   const [filtersOpen, setFiltersOpen] = useState(false)
@@ -104,7 +105,7 @@ export default function MobileHeader() {
                   <option value="all">All accounts</option>
                   {filteredAccounts.map((acc) => (
                     <option key={acc.plaid_account_id} value={acc.plaid_account_id}>
-                      {acc.name}{acc.mask ? ` ••${acc.mask}` : ''}
+                      {formatAccountOption(acc, institution === 'all')}
                     </option>
                   ))}
                 </select>

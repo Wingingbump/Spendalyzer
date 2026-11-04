@@ -9,7 +9,7 @@ import { useWorkspace } from '../context/WorkspaceContext'
 import { usePanel } from '../context/PanelContext'
 import { PANEL_WIDTH } from '../components/RightPanel'
 import { useIsMobile } from '../hooks/useIsMobile'
-import { formatCurrency, formatDate, getCategoryColor } from '../lib/utils'
+import { formatCurrency, formatDate, formatSource, getCategoryColor } from '../lib/utils'
 import SkeletonRow from '../components/SkeletonRow'
 import Spinner from '../components/Spinner'
 import RangeSelect from '../components/RangeSelect'
@@ -221,7 +221,7 @@ export default function Transactions() {
         case 'name': return (r.name || '').toLowerCase()
         case 'merchant': return (r.merchant_normalized || '').toLowerCase()
         case 'category': return (r.category || '').toLowerCase()
-        case 'institution': return (r.institution || '').toLowerCase()
+        case 'institution': return formatSource(r.institution, r.account_label).toLowerCase()
       }
     }
     return [...rows].sort((a, b) => {
@@ -1121,8 +1121,12 @@ export default function Transactions() {
                           </span>
                         )}
                       </td>
-                      <td style={{ fontSize: 12, color: 'var(--color-text-muted)', whiteSpace: 'nowrap', background: isSelected ? 'var(--color-accent-soft)' : undefined }}>
-                        {row.institution}
+                      <td
+                        title={formatSource(row.institution, row.account_label)}
+                        style={{ fontSize: 12, color: 'var(--color-text-muted)', whiteSpace: 'nowrap', background: isSelected ? 'var(--color-accent-soft)' : undefined }}
+                      >
+                        <div>{row.institution}</div>
+                        {row.account_label && <div style={{ fontSize: 11, opacity: 0.8 }}>{row.account_label}</div>}
                       </td>
                       <td style={{ background: isSelected ? 'var(--color-accent-soft)' : undefined }}>
                         <div className="flex items-center gap-1">

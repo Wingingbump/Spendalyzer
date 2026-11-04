@@ -86,6 +86,8 @@ def _build_df_inner(user_id: int) -> pd.DataFrame:
             "account_name": pd.Series(dtype=str),
             "account_mask": pd.Series(dtype=str),
             "account_subtype": pd.Series(dtype=str),
+            "account_connected": pd.Series(dtype=bool),
+            "account_label": pd.Series(dtype=str),
             "notes": pd.Series(dtype=str),
             "type": pd.Series(dtype=str),
             "is_transfer": pd.Series(dtype=bool),
@@ -105,6 +107,7 @@ def _build_df_inner(user_id: int) -> pd.DataFrame:
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce").astype(float)
     df["pending"] = df["pending"].astype(bool)
     df["type"] = df["amount"].apply(lambda x: "credit" if x < 0 else "debit")
+    df = add_account_labels(df)
 
     # Protect only real user overrides (rows with an entry in the overrides table)
     df["has_user_override"] = df["has_user_override"].astype(bool)
@@ -164,6 +167,45 @@ def _build_df_inner(user_id: int) -> pd.DataFrame:
     with _df_cache_lock:
         _df_cache[user_id] = df
     return df
+
+DISCONNECTED_ACCOUNT_LABEL = "Disconnected account"
+
+
+def account_label(name, mask, connected: bool = True, has_account: bool = True) -> str:
+    """Human label for a sub-account, e.g. "Savor ••4874".
+
+    One connection can hold several cards and bank accounts (and since the
+    Discover/Capital One merger, cards from both brands), so the institution
+    alone doesn't say which one a transaction hit. An account whose connection
+    was removed before its name was ever snapshotted has nothing to show, so it
+    gets a generic label rather than a blank. Manual rows have no account.
+    """
+    name = str(name).strip() if isinstance(name, str) else ""
+    mask = str(mask).strip() if isinstance(mask, str) else ""
+    if name:
+        return f"{name} ••{mask}" if mask else name
+    if mask:
+        return f"••{mask}"
+    if has_account and not connected:
+        return DISCONNECTED_ACCOUNT_LABEL
+    return ""
+
+
+def add_account_labels(df: pd.DataFrame) -> pd.DataFrame:
+    def col(name, default):
+        return df[name] if name in df.columns else pd.Series(default, index=df.index)
+
+    names = col("account_name", None)
+    masks = col("account_mask", None)
+    connected = col("account_connected", True).fillna(False).astype(bool)
+    has_account = col("plaid_account_id", None).notna() & (col("plaid_account_id", None) != "")
+    df["account_connected"] = connected
+    df["account_label"] = [
+        account_label(n, m, c, h)
+        for n, m, c, h in zip(names, masks, connected, has_account)
+    ]
+    return df
+
 
 def apply_transfer_overrides(df: pd.DataFrame, overrides: dict) -> pd.DataFrame:
     """Force `is_transfer` for counterparties the user has ruled on.
@@ -485,9 +527,11 @@ def spending_by_category(df: pd.DataFrame) -> pd.DataFrame:
 def drill_down_category(df: pd.DataFrame, category: str) -> pd.DataFrame:
     """All transactions for a given category sorted by date desc."""
     spending = get_spending(df)
+    cols = [c for c in ["date", "name", "merchant_normalized", "amount",
+                        "institution", "account_label"] if c in spending.columns]
     return (
         spending[spending["category"] == category]
-        [["date", "name", "merchant_normalized", "amount", "institution"]]
+        [cols]
         .sort_values("date", ascending=False)
         .reset_index(drop=True)
     )
@@ -512,9 +556,11 @@ def spending_by_merchant(df: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
 def drill_down_merchant(df: pd.DataFrame, merchant: str) -> pd.DataFrame:
     """All transactions for a given merchant sorted by date desc."""
     spending = get_spending(df)
+    cols = [c for c in ["date", "name", "amount", "category",
+                        "institution", "account_label"] if c in spending.columns]
     return (
         spending[spending["merchant_normalized"] == merchant]
-        [["date", "name", "amount", "category", "institution"]]
+        [cols]
         .sort_values("date", ascending=False)
         .reset_index(drop=True)
     )

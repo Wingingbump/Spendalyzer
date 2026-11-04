@@ -111,9 +111,13 @@ export interface DowData {
 
 export interface PlaidAccount {
   plaid_account_id: string
-  name: string
-  mask: string
+  name: string | null
+  mask: string | null
   institution: string
+  // Display form, e.g. "Savor ••4874" — falls back for accounts whose
+  // connection was removed before their name was recorded.
+  label?: string
+  connected?: boolean
 }
 
 export interface PotentialDupOf {
@@ -131,6 +135,7 @@ export interface Transaction {
   category: string
   amount: number
   institution: string
+  account_label?: string
   pending: boolean
   notes: string
   has_user_override: boolean
@@ -156,6 +161,7 @@ export interface LedgerRow {
   category: string
   amount: number
   institution: string
+  account_label?: string
   pending: boolean
   notes: string
   type?: string

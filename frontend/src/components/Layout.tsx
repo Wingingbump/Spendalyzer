@@ -15,6 +15,7 @@ import { useIdleTimeout } from '../hooks/useIdleTimeout'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useFilters } from '../context/FilterContext'
 import { insightsApi } from '../lib/api'
+import { formatAccountOption } from '../lib/utils'
 
 const PANEL_HIDDEN_ROUTES = ['/settings', '/login']
 
@@ -36,7 +37,7 @@ function FilterChips() {
 
   const institutionName = institutions.find(i => i === institution) || institution
   const accountData = accounts.find(a => a.plaid_account_id === account)
-  const accountDisplay = accountData ? `${accountData.name} ••${accountData.mask}` : account
+  const accountDisplay = accountData ? formatAccountOption(accountData) : account
 
   return (
     <div style={{ marginBottom: 12 }}>

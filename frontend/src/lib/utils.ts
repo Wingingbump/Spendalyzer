@@ -61,6 +61,27 @@ export function formatMonth(month: string): string {
 }
 
 /**
+ * Where a transaction came from: "Capital One · Savor ••4874". One connection
+ * can hold several cards and bank accounts, so the institution alone is
+ * ambiguous; the account label is omitted when the row has none (manual rows).
+ */
+export function formatSource(institution?: string | null, accountLabel?: string | null): string {
+  return [institution, accountLabel].filter(Boolean).join(' · ')
+}
+
+/**
+ * Label for an account in a picker. Includes the institution when the list
+ * spans institutions, since two banks can both have a "Checking".
+ */
+export function formatAccountOption(
+  acc: { name?: string | null; mask?: string | null; label?: string; institution?: string },
+  withInstitution = false,
+): string {
+  const label = acc.label || [acc.name, acc.mask ? `••${acc.mask}` : ''].filter(Boolean).join(' ')
+  return withInstitution ? formatSource(acc.institution, label) : label
+}
+
+/**
  * Truncate a string to maxLen chars, adding ellipsis if needed
  */
 export function truncate(str: string, maxLen: number): string {

@@ -208,6 +208,24 @@ def _run_migrations():
             conn.execute(
                 f"ALTER TABLE transactions ADD COLUMN IF NOT EXISTS {_col} {_type}"
             )
+        # Sub-account snapshot, copied from plaid_accounts at insert. plaid_accounts
+        # rows cascade away when a connection is removed (e.g. dropping Discover to
+        # re-add it under Capital One after the merger), and without this the old
+        # history loses its card name, mask and subtype — the subtype also feeds
+        # credit-card transfer detection. Reads prefer the live plaid_accounts row.
+        for _col in ("account_name", "account_mask", "account_subtype"):
+            conn.execute(
+                f"ALTER TABLE transactions ADD COLUMN IF NOT EXISTS {_col} TEXT"
+            )
+        conn.execute("""
+            UPDATE transactions t
+               SET account_name    = pa.name,
+                   account_mask    = pa.mask,
+                   account_subtype = pa.subtype
+              FROM plaid_accounts pa
+             WHERE t.plaid_account_id = pa.plaid_account_id
+               AND t.account_name IS NULL
+        """)
 
         # Overrides
         conn.execute("""
@@ -1054,9 +1072,10 @@ def fetch_transactions(user_id: int) -> list[dict]:
                 t.pending,
                 t.institution,
                 t.plaid_account_id,
-                pa.name                            AS account_name,
-                pa.mask                            AS account_mask,
-                pa.subtype                         AS account_subtype,
+                COALESCE(pa.name,    t.account_name)    AS account_name,
+                COALESCE(pa.mask,    t.account_mask)    AS account_mask,
+                COALESCE(pa.subtype, t.account_subtype) AS account_subtype,
+                (pa.plaid_account_id IS NOT NULL)       AS account_connected,
                 COALESCE(o.notes, '')              AS notes,
                 (o.transaction_id IS NOT NULL
                  AND o.category IS NOT NULL)       AS has_user_override,
@@ -1125,6 +1144,7 @@ _ENRICHMENT_COLS = (
     "pfc_primary", "pfc_detailed", "pfc_confidence",
     "payment_channel", "plaid_merchant_name", "counterparties",
 )
+_ACCOUNT_SNAPSHOT_COLS = ("account_name", "account_mask", "account_subtype")
 
 
 def update_transaction_enrichment(records: list[dict], user_id: int):
@@ -1159,7 +1179,8 @@ def update_transaction_enrichment(records: list[dict], user_id: int):
 def upsert_transactions(transactions: list[dict]):
     # Ensure every enrichment column is present on each record so the named
     # placeholders resolve even for callers that don't supply them.
-    records = [{**{c: None for c in _ENRICHMENT_COLS}, **t} for t in transactions]
+    records = [{**{c: None for c in _ENRICHMENT_COLS + _ACCOUNT_SNAPSHOT_COLS}, **t}
+               for t in transactions]
     with get_conn() as conn:
         conn.execute("SET LOCAL app.current_user_id = 'bypass'")
         conn.executemany("""
@@ -1167,12 +1188,14 @@ def upsert_transactions(transactions: list[dict]):
                 (id, date, name, amount, category, pending, institution,
                  plaid_account_id, user_id,
                  pfc_primary, pfc_detailed, pfc_confidence,
-                 payment_channel, plaid_merchant_name, counterparties)
+                 payment_channel, plaid_merchant_name, counterparties,
+                 account_name, account_mask, account_subtype)
             VALUES
                 (%(id)s, %(date)s, %(name)s, %(amount)s, %(category)s, %(pending)s,
                  %(institution)s, %(plaid_account_id)s, %(user_id)s,
                  %(pfc_primary)s, %(pfc_detailed)s, %(pfc_confidence)s,
-                 %(payment_channel)s, %(plaid_merchant_name)s, %(counterparties)s)
+                 %(payment_channel)s, %(plaid_merchant_name)s, %(counterparties)s,
+                 %(account_name)s, %(account_mask)s, %(account_subtype)s)
             ON CONFLICT (id) DO UPDATE SET
                 pending     = EXCLUDED.pending,
                 amount      = EXCLUDED.amount,
@@ -1185,7 +1208,10 @@ def upsert_transactions(transactions: list[dict]):
                 pfc_confidence      = COALESCE(EXCLUDED.pfc_confidence,      transactions.pfc_confidence),
                 payment_channel     = COALESCE(EXCLUDED.payment_channel,     transactions.payment_channel),
                 plaid_merchant_name = COALESCE(EXCLUDED.plaid_merchant_name, transactions.plaid_merchant_name),
-                counterparties      = COALESCE(EXCLUDED.counterparties,      transactions.counterparties)
+                counterparties      = COALESCE(EXCLUDED.counterparties,      transactions.counterparties),
+                account_name        = COALESCE(EXCLUDED.account_name,        transactions.account_name),
+                account_mask        = COALESCE(EXCLUDED.account_mask,        transactions.account_mask),
+                account_subtype     = COALESCE(EXCLUDED.account_subtype,     transactions.account_subtype)
         """, records)
 
 

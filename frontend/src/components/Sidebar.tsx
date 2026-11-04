@@ -16,7 +16,7 @@ import {
 import { insightsApi, syncApi } from '../lib/api'
 import { useAuth, useAdvisorEnabled } from '../context/AuthContext'
 import { useFilters } from '../context/FilterContext'
-import { formatDate } from '../lib/utils'
+import { formatAccountOption, formatDate } from '../lib/utils'
 
 const NAV_ITEMS = [
   { to: '/overview', label: 'Overview', icon: LayoutDashboard },
@@ -162,7 +162,7 @@ export default function Sidebar() {
             <option value="all">All accounts</option>
             {filteredAccounts.map((acc) => (
               <option key={acc.plaid_account_id} value={acc.plaid_account_id}>
-                {acc.name} {acc.mask ? `••${acc.mask}` : ''}
+                {formatAccountOption(acc, institution === 'all')}
               </option>
             ))}
           </select>

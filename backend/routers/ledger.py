@@ -29,7 +29,7 @@ def ledger(
     df = apply_filters(df, range, institution, account, category, merchant_query)
 
     cols = [c for c in ["id", "date", "name", "merchant_normalized", "category",
-                         "amount", "institution", "pending", "type",
+                         "amount", "institution", "account_label", "pending", "type",
                          "is_transfer", "is_duplicate", "notes",
                          "has_user_override", "is_manual",
                          "is_reimbursement", "needs_review", "is_excluded",
@@ -99,7 +99,7 @@ def export_ledger(
     df = apply_filters(df, range, institution, account, category, merchant_query)
 
     cols = [c for c in ["date", "name", "merchant_normalized", "category",
-                         "amount", "institution", "type", "pending",
+                         "amount", "institution", "account_label", "type", "pending",
                          "is_transfer", "is_duplicate", "notes"]
             if c in df.columns]
     result = df[cols].sort_values("date", ascending=False).reset_index(drop=True)

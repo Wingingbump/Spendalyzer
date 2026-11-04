@@ -349,3 +349,30 @@ class TestAccountsEndpoint:
         with patch("backend.routers.insights.ins.load_data", return_value=_make_df()):
             r = client.get("/insights/accounts")
         assert "NaN" not in r.text
+
+    def test_manual_rows_are_not_an_account(self, client):
+        rows = [
+            {"id": "tx1", "plaid_account_id": "acct1"},
+            {"id": "tx2", "plaid_account_id": None, "institution": "Manual",
+             "account_name": None, "account_mask": None},
+        ]
+        with patch("backend.routers.insights.ins.load_data", return_value=_make_df(rows)):
+            r = client.get("/insights/accounts")
+        assert [rec["plaid_account_id"] for rec in r.json()] == ["acct1"]
+
+    def test_carries_label_and_connection_state(self, client):
+        from core.insights import add_account_labels
+        rows = [
+            {"id": "tx1", "plaid_account_id": "savor", "institution": "Capital One",
+             "account_name": "Savor", "account_mask": "4874", "account_connected": True},
+            {"id": "tx2", "plaid_account_id": "old", "institution": "Discover",
+             "account_name": None, "account_mask": None, "account_connected": False},
+        ]
+        df = add_account_labels(_make_df(rows))
+        with patch("backend.routers.insights.ins.load_data", return_value=df):
+            r = client.get("/insights/accounts")
+        by_id = {rec["plaid_account_id"]: rec for rec in r.json()}
+        assert by_id["savor"]["label"] == "Savor ••4874"
+        assert by_id["savor"]["connected"] is True
+        assert by_id["old"]["label"] == "Disconnected account"
+        assert by_id["old"]["connected"] is False

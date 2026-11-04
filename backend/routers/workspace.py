@@ -535,7 +535,7 @@ def group_transactions(group_id: int, current_user: dict = Depends(get_current_u
         return {"rows": [], "total": 0.0, "count": 0, "transaction_ids": tx_ids}
 
     cols = [c for c in ["id", "date", "name", "merchant_normalized", "category",
-                         "amount", "institution", "pending", "notes"]
+                         "amount", "institution", "account_label", "pending", "notes"]
             if c in matched.columns]
     result = matched[cols].sort_values("date", ascending=False)
 

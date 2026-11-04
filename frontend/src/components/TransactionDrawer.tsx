@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { X, Pencil, Tag, Repeat, AlertTriangle, Trash2, Check, EyeOff, ArrowLeftRight } from 'lucide-react'
 import type { LedgerRow, RecurringRule } from '../lib/api'
-import { formatDate, formatCurrency, getCategoryColor } from '../lib/utils'
+import { formatDate, formatCurrency, formatSource, getCategoryColor } from '../lib/utils'
 
 interface TransactionDrawerProps {
   row: LedgerRow
@@ -261,7 +261,7 @@ export default function TransactionDrawer({
             }}
           >
             <span>{formatDate(row.date)}</span>
-            {row.institution && <span>{row.institution}</span>}
+            {row.institution && <span>{formatSource(row.institution, row.account_label)}</span>}
           </div>
         </div>
 

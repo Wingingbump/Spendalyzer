@@ -460,11 +460,17 @@ def accounts(
     df = ins.load_data(current_user["id"])
     if df.empty:
         return []
-    cols = [c for c in ["plaid_account_id", "account_name", "account_mask", "institution"] if c in df.columns]
+    cols = [c for c in ["plaid_account_id", "account_name", "account_mask", "institution",
+                        "account_label", "account_connected"] if c in df.columns]
     if not cols:
         return []
-    sub = df[cols].drop_duplicates(
+    sub = df
+    if "plaid_account_id" in cols:
+        # Manual rows have no account; they'd surface as one blank option.
+        sub = sub[sub["plaid_account_id"].notna() & (sub["plaid_account_id"] != "")]
+    sub = sub[cols].drop_duplicates(
         subset=["plaid_account_id"] if "plaid_account_id" in cols else cols
     )
-    sub = sub.rename(columns={"account_name": "name", "account_mask": "mask"})
+    sub = sub.rename(columns={"account_name": "name", "account_mask": "mask",
+                              "account_label": "label", "account_connected": "connected"})
     return _df_to_records(sub)

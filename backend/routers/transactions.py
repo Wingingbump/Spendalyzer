@@ -57,7 +57,7 @@ def list_transactions(
 
     spending = ins.get_spending(df)
     cols = [c for c in ["id", "date", "name", "merchant_normalized", "category",
-                         "amount", "institution", "pending", "notes",
+                         "amount", "institution", "account_label", "pending", "notes",
                          "has_user_override", "is_manual",
                          "is_potential_duplicate", "potential_dup_of"]
             if c in spending.columns]

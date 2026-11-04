@@ -272,6 +272,11 @@ def save_transactions(transactions: list, institution: str,
         "institution":      account_map.get(t["account_id"], {}).get("institution_name", institution),
         "plaid_account_id": t["account_id"],
         "user_id":          user_id,
+        # Snapshot so the sub-account stays identifiable after its connection
+        # is removed (see the transactions schema in core.db).
+        "account_name":     account_map.get(t["account_id"], {}).get("name"),
+        "account_mask":     account_map.get(t["account_id"], {}).get("mask"),
+        "account_subtype":  account_map.get(t["account_id"], {}).get("subtype"),
         **extract_enrichment(t),
     } for t in new_transactions]
 

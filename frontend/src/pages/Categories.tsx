@@ -7,7 +7,7 @@ import {
 import { categoriesApi } from '../lib/api'
 import { useFilters } from '../context/FilterContext'
 import { useTheme } from '../context/ThemeContext'
-import { formatCurrency, formatDate, CHART_COLORS_DARK, CHART_COLORS_LIGHT } from '../lib/utils'
+import { formatCurrency, formatDate, formatSource, CHART_COLORS_DARK, CHART_COLORS_LIGHT } from '../lib/utils'
 import Card from '../components/Card'
 import RangeSelect from '../components/RangeSelect'
 import Spinner from '../components/Spinner'
@@ -274,7 +274,7 @@ export default function Categories({ embedded = false }: { embedded?: boolean })
                         </span>
                       </td>
                       <td style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
-                        {tx.institution}
+                        {formatSource(tx.institution, tx.account_label)}
                       </td>
                     </tr>
                   ))
